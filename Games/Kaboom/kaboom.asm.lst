@@ -1,0 +1,1074 @@
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											KABOOM - For the RCA Studio 2 (1802 Assembler)
+                        ;											==============================================
+                        ;
+                        ;	Author : 	Paul Robson (paul@robsons.org.uk)
+                        ;	Tools :		Assembles with asmx cross assembler http://xi6.com/projects/asmx/
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;       Reserved for Studio 2 BIOS : 	R0,R1,R2,R8,R9,RB.0
+                        ;
+                        ;		Other usage
+                        ;		===========
+                        ;		R2 		Used for Stack, therefore R2.1 always points to RAM Page.
+                        ;       R3      PC (lowest level)
+                        ;		R5 		Draw Bat Subroutine
+                        ;		R7 		Draw Bomb Subroutine
+                        ;		RF 		Random Number Seed
+                        ;
+                        ;
+                        ; 		Studio 2 Specifics/Porting advice
+                        ;	 	=================================
+                        ;
+                        ;			(a) R9 incremented every Frame. This can be implemented in the video routine.
+                        ;			(b) $08CD is a beeper timer, also implementable in the video routine. When set to a non-zero value it beeps for that many frames.
+                        ;			(c) The keyboard is read by outing the digit to port 2 and testing EF3 for '1'. On Cosmac VIP this should test for '0'. Elf totally different.
+                        ; 			(d) On S2 User RAM is at $800 and Video RAM at $900. The program doesn't care itself.
+                        ;			(e) On S2 the code starts at $400 and begins with a 'Chip8' instruction machine code call e.g. 0abc
+                        ; 			(f) The high score uses a table at $210 which is 10 values, each of which is an LSB of an address in $2xx which is the start of
+                        ; 				5 rows of pixel data defining an integer.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+      = 0008            RamPage	= 8													; 256 byte RAM page used for Data ($800 on S2)
+      = 0009            VideoPage = 9												; 256 byte RAM page used for Video ($900 on S2)
+
+      = 0000            BombList = 0 	 											; Bomb list at position 0 on RAM Page
+      = 0005            BombRecSize = 5 											; Number of Bytes per Bomb Record
+      = 000A            BombMax = 10 												; Maximum number of Bombs supported.
+      = 0032            BombListEnd = BombMax * BombRecSize
+
+      = 0080            LoseFlag = $80 												; Set to '1' when you have lost.
+      = 0081            SyncCounter = $81 											; used to sync game speed.
+      = 0082            MoveCounter = $82 											; used to sync base moves
+      = 0083            Lives = $83 												; Lives (3-0)
+      = 0084            BatPosition = $84 											; Bat Position (0-255)
+      = 0085            BatVelocity = $85 											; Bat velocity (-8 ... 8)
+      = 0086            ExtraLifeFlag = $86 										; set to '1' when extra lfe claimed (e.g. ticked over 1000 points)
+      = 0087            BombsToDrop = $87 											; number of bombs to drop.
+      = 0088            BombsToHit = $88 											; counter of number of bombs to hit
+      = 0089            BombScoreEach = $89											; Score per bomb 1-9 only
+      = 008A            Score = $8A 												; 6 bytes of score, LSB first.
+      = 0090            Level = $90 												; current game level (1-9)
+      = 0091            BomberPosition = $91 										; current bomber position
+
+      = 00CD            Studio2BeepTimer = $CD 										; Studio 2 Beep Counter
+
+      = 0004            BatSpeed = 4 												; the number of moves of bombs per bat move.
+      = 0004            BombMovesPerFrame = 4 										; no of attempted bomb moves per frame.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;												Bomb Data Structure
+                        ;
+                        ;		+0 		Horizontal Position in nibbles (0-15). Bit 7 set means not in use.
+                        ;		+1 		LSB of physical screen position of top line
+                        ;		+2 		LSB of graphic to draw.
+                        ;		+3 		Speed (0-255)
+                        ;		+4 		Speed Counter - add Speed to it, move on DF.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;												Studio 2 Boot Code
+                        ;	
+                        ; ***************************************************************************************************************************************
+
+0000                        	.include "1802.inc"
+      = 0000            r0      = 0
+      = 0001            r1      = 1
+      = 0002            r2      = 2
+      = 0003            r3      = 3
+      = 0004            r4      = 4
+      = 0005            r5      = 5
+      = 0006            r6      = 6
+      = 0007            r7      = 7
+      = 0008            r8      = 8
+      = 0009            r9      = 9
+      = 000A            ra      = 10
+      = 000B            rb      = 11
+      = 000C            rc      = 12
+      = 000D            rd      = 13
+      = 000E            re      = 14
+      = 000F            rf      = 15
+
+0400                        	.org    400h										; ROM code in S2 starts at $400.
+0400                    StartCode:
+0400  06E0                  	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;					Bomb Graphic : stay here, must all be on same page. Each graphic is duplicated in each half of the byte
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0402                    BombGraphic1:
+0402  442266FF 6600     		.db		$44,$22,$66,$FF,$66,0						; Bomb Graphic #1 (duplicated in both halves of byte)
+0408                    BombGraphic2:	
+0408  224466FF 6600     		.db		$22,$44,$66,$FF,$66,0						; Bomb Graphic #2 (duplicated in both halves of byte)
+040E                    Explosion:
+040E  99669966 9900     		.db 	$99,$66,$99,$66,$99,0						; Explosion (duplicated in both halves of byte)
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;								 Bat Graphic : 8 x 4 bytes, each one is shifted right successively one bit
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0414                    BatGraphic:
+0414  7C00AA00          		.db 	$7C,$00, 	$AA,$00 						; Shift 0 Right
+0418  3E005500          		.db 	$3E,$00, 	$55,$00 						; Shift 1 Right
+041C  1F002A80          		.db 	$1F,$00, 	$2A,$80 						; Shift 2 Right
+0420  0F801540          		.db 	$0F,$80, 	$15,$40 						; Shift 3 Right
+0424  07C00AA0          		.db 	$07,$C0, 	$0A,$A0 						; Shift 4 Right
+0428  03E00550          		.db 	$03,$E0, 	$05,$50 						; Shift 5 Right
+042C  01F002A8          		.db 	$01,$F0, 	$02,$A8 						; Shift 6 Right
+0430  00F80154          		.db 	$00,$F8, 	$01,$54 						; Shift 7 Right
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;	Draw Bomb Graphic pointed to by R4. Fast because uses nibl resolution, so bombs are xor-drawn in bytes - this is why there are 16
+                        ;	places across the screen, they represent 8 x 2 nibbles.
+                        ;
+                        ;	Breaks : RD,RE : Draws at approximately 750 per second.
+                        ;	Returns to : R6
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0434                    DrawBomb:
+0434  04                		ldn 	r4 											; read bomb horizontal
+0435  FE                		shl 												; shift bit 7 into DF
+0436  33 5D             		bdf 	DB_Exit 									; if set draw nothing.
+
+0438  44                		lda 	r4 											; Read the Bomb Horizontal (0-15) into D, advance to position (+1)
+0439  F6                		shr 												; shift the least significant bit into DF
+043A  F8 0F             		ldi 	$0F 										; mask to use is $0F
+043C  33 40             		bdf		DB_RightHandNibble
+043E  F8 F0             		ldi 	$F0											; if DF == 0, e.g. use left half of byte.
+0440                    DB_RightHandNibble:
+0440  22                		dec 	r2 											; save mask on stack free space.
+0441  52                		str 	r2 											; [R2] is the mask to be used.
+
+0442  44                		lda 	r4 											; put R4 in RE.0 e.g. the drawing address, advance to graphic (+2)
+0443  AE                		plo 	re		
+0444  F8 09             		ldi 	VideoPage 									; RE.1 = Video Page, so RE points to drawing byte
+0446  BE                		phi 	re
+
+0447  F8 04             		ldi 	>BombGraphic1 								; make RD point to the bomb graphic
+0449  BD                		phi 	rd
+044A  04                		ldn 	r4 				
+044B  AD                		plo 	rd
+
+044C  24                		dec		r4 											; fix the 2 LDAs so that R4 has not changed.
+044D  24                		dec 	r4
+
+044E                    DB_PlotBomb:
+044E  4D                		lda 	rd 											; read graphic and advance RD
+044F  32 5C             		bz 		DB_DrawCompleted							; if zero, end of bomb draw.
+0451  E2                		sex 	r2 											; and with the mask on the stack byte
+0452  F2                		and
+0453  EE                		sex 	re 											; xor with the video page
+0454  F3                		xor
+0455  5E                		str 	re 											; and write back to the video.
+0456  8E                		glo 	re 											; add 8 to re, i.e. next row down.
+0457  FC 08             		adi 	8
+0459  AE                		plo 	re
+045A  3B 4E             		bnf 	DB_PlotBomb 								; plot another bomb if NOT carry out (e.g. off the bottom of the screen)
+
+045C                    DB_DrawCompleted:
+045C  12                		inc 	r2 											; reclaim the stack space.
+045D                    DB_Exit:
+045D  D6                		sep		r6 											; return
+045E  30 34             		br 		DrawBomb
+
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;								   Move Bomb pointed to by R4 down. Manages about 330 bombs / second
+                        ;
+                        ;	Breaks : RD,RE (Draw subroutine)
+                        ;	Returns: R3
+                        ;
+                        ;	Note: this also time syncs. If a sufficient number of calls have occurred, it syncs by waiting for R9 to go +ve. R9 increments
+                        ; 		  in the Video Redraw section.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0460                    MoveBomb:
+0460  04                		ldn 	r4 											; read R4 (X position)
+0461  FE                		shl 												; if bit 7 set (bomb not in play)
+0462  33 88             		bdf		MB_NotMoving								; don't move it.
+
+0464  14                		inc 	r4 											; point to speed (+3)
+0465  14                		inc 	r4
+0466  14                		inc 	r4
+0467  44                		lda 	r4 											; load speed, point to speed counter (+4)
+0468  E4                		sex 	r4 											; add speed to speed counter
+0469  F4                		add
+046A  73                		stxd 												; store back, point to (+3)	
+046B  24                		dec 	r4 											; set R4 back to +0
+046C  24                		dec 	r4
+046D  24                		dec 	r4
+046E  3B 88             		bnf 	MB_NotMoving								; not moving this time
+
+
+0470  D7                		sep 	r7 											; erase the bomb
+0471  14                		inc 	r4 											; access the position (offset 1())
+0472  04                		ldn 	r4 											; add 8 (one line down) to it
+0473  FC 08             		adi 	8
+0475  54                		str 	r4
+
+0476  FC 10             		adi 	$10 										; adding $10 gives DF for D = $F0..$FF
+0478  3B 80             		bnf 	MB_NotLost
+047A  94                		ghi		r4 											; point RE to Lost Flag.
+047B  BE                		phi 	re
+047C  F8 80             		ldi 	LoseFlag
+047E  AE                		plo 	re
+047F  5E                		str 	re 											; LoseFlag set to non-zero (BombList at $00)
+0480                    MB_NotLost:
+
+0480  14                		inc 	r4 											; point to graphic (+2)
+0481  04                		ldn 	r4 											; switch from one to other
+0482  FB 0A             		xri 	BombGraphic1 ^ BombGraphic2
+0484  54                		str 	r4 											; write graphic back.
+0485  24                		dec 	r4	
+0486  24                		dec 	r4 											; fix R4 back to point to the record	
+
+0487  D7                		sep 	r7 											; and draw the bomb.
+
+0488                    MB_NotMoving:
+0488  92                		ghi 	r2 											; set RE to point to Move Counter
+0489  BE                		phi 	re 											; this counts towards zero, when it is zero
+048A  F8 82             		ldi 	MoveCounter 								; the bat can move. The bat routine resets it.
+048C  AE                		plo 	re
+048D  0E                		ldn 	re 											; read it
+048E  32 93             		bz 		MB_MoveCounterZero 						
+0490  FF 01             		smi 	1 											; decrement and write back if non-zero
+0492  5E                		str 	re 											; when it gets to zero the bat can move.
+0493                    MB_MoveCounterZero:
+
+0493  F8 81             		ldi 	SyncCounter 								; we *always* decrement the sync counter, point RE to it
+0495  AE                		plo 	re 											
+0496  0E                		ldn 	re 											; read the sync counter
+0497  32 9D             		bz 		MB_SyncWithFrameCounter 					; if zero, synchronise with frame counter.
+0499  FF 01             		smi 	1 											; subtract one if non zero.
+049B  5E                		str 	re 											; and write back
+
+049C                    MB_Exit:
+049C  D3                		sep 	r3
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+049D                    MB_SyncWithFrameCounter:
+049D  F8 04             		ldi 	BombMovesPerFrame							; Number of moves per frame.
+049F  5E                		str 	re 											; reset the sync counter
+04A0                    MB_SyncWait:
+04A0  99                		ghi 	r9 											; wait for R9 to be $00
+04A1  3A A0             		bnz 	MB_SyncWait	
+04A3  F8 FF             		ldi 	$FF 										; reset R9 to -1
+04A5  B9                		phi 	r9
+04A6  A9                		plo 	r9
+04A7  30 9C             		br 		MB_Exit
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Draw Bat Graphic
+                        ;
+                        ;	Breaks RD.RE.R4
+                        ;	Returns to R6
+                        ;
+                        ; ***************************************************************************************************************************************
+
+04A9                    DrawBat:
+04A9  F8 83              		ldi 	Lives 										; Point RD to Lives (number of vertical bats to draw)
+04AB  AD                		plo 	rd
+04AC  92                		ghi 	r2
+04AD  BD                		phi 	rd
+04AE  4D                		lda 	rd 											; read lives and increment
+04AF  32 E6             		bz 		DBT_Exit  									; if zero do nothing.
+04B1  A4                		plo 	r4 	 										; save in R4.0
+04B2  0D                		ldn	 	rd 											; read Bat Position (one after lives) which is 0-255
+04B3  AE                		plo 	re 											; save in RE.0
+04B4  F6                		shr 												; divide 32 - value now 0-8 e.g. the byte to write in
+04B5  F6                		shr 												
+04B6  F6                		shr
+04B7  F6                		shr
+04B8  F6                		shr
+04B9  FC C0             		adi 	24*8 										; this is now the byte position on the screen.
+04BB  AD                		plo 	rd 											; save in RD.0
+04BC  F8 09             		ldi 	VideoPage 									; Make RD point to the first drawing position
+04BE  BD                		phi 	rd
+
+04BF  8E                		glo 	re 											; Retrieve 0-255 value
+04C0  FA 1C             		ani		$1C											; Now it's an offset in gfx table (/4 to make pixel x4 because 4 bytes per graphic :) )
+04C2  FC 14             		adi 	<BatGraphic 								; Make RE point to the appropriate bat graphic for the shift
+04C4  AE                		plo 	re
+04C5  B4                		phi 	r4 											; save in R4.1
+04C6  F8 04             		ldi 	>BatGraphic 								
+04C8  BE                		phi 	re
+
+04C9  ED                		sex 	rd 											; RE is the index register
+
+04CA                    DBT_Loop:	
+04CA  4E                		lda 	re 											; read graphic and bump
+04CB  F3                		xor 												; xor with screen
+04CC  5D                		str 	rd
+04CD  1D                		inc 	rd 											; next horizontal byte, do the same.
+04CE  4E                		lda 	re 											
+04CF  F3                		xor
+04D0  5D                		str 	rd
+04D1  8D                		glo 	rd 											; add 7 to RD e.g. next line down from start
+04D2  FC 07             		adi 	7
+04D4  AD                		plo 	rd
+04D5  4E                		lda 	re 											; duplicate of above, 2nd line of graphic
+04D6  F3                		xor 												
+04D7  5D                		str 	rd
+04D8  1D                		inc 	rd
+04D9  4E                		lda 	re
+04DA  F3                		xor
+04DB  5D                		str 	rd
+04DC  8D                		glo 	rd 											; except we add 15 to RD giving a line gab.
+04DD  FC 0F             		adi 	15
+04DF  AD                		plo 	rd
+04E0  94                		ghi 	r4 											; restore the graphic pointer from R4.1 so the graphic pointer is fixed up.
+04E1  AE                		plo 	re 											
+04E2  24                		dec 	r4 											; decrement 'lives' counter
+04E3  84                		glo 	r4
+04E4  3A CA             		bnz		DBT_Loop 									; go back if not clear.
+04E6                    DBT_Exit:
+04E6  D6                		sep 	r6
+04E7  30 A9             		br 		DrawBat
+
+
+                        ; ***************************************************************************************************************************************
+                        ;	
+                        ;	Move Bat. This is not a simple left right. The buttons apply acceleration to a velocity which is added to the position. The
+                        ;	velocity damps towards zero. If you have a paddle, everything between the two 'sep r5' calls (erase and draw bat) can be
+                        ;	replaced, just putting the value read from the paddle in [BatPosition]
+                        ;
+                        ;	Breaks R4,RD,RE
+                        ;	Returns R3.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+04E9                    MVB_Exit:
+04E9  D3                		sep 	r3
+
+04EA                    MoveBat:
+04EA  92                		ghi 	r2 		 									; point R4 to Move Counter
+04EB  B4                		phi 	r4
+04EC  F8 82             		ldi 	MoveCounter
+04EE  A4                		plo 	r4
+04EF  04                		ldn 	r4 											; if it is non zero don't move.
+04F0  3A E9             		bnz 	MVB_Exit
+04F2  F8 04             		ldi 	BatSpeed									; reset move counter, determines bat speed.
+04F4  54                		str 	r4 											; number of move attempts per bat move.
+04F5  D5                		sep 	r5 											; erase bat
+
+04F6  92                		ghi 	r2 											; point R4 at Velocity
+04F7  B4                		phi 	r4
+04F8  F8 85             		ldi 	BatVelocity
+04FA  A4                		plo 	r4
+
+04FB  E2                		sex 	r2 											; X = R2
+04FC  22                		dec 	r2 											; store 4 on TOS
+04FD  F8 04             		ldi 	4
+04FF  52                		str 	r2
+0500  62                		out 	2 											; select key 4
+0501  36 19             		b3 		MVB_AccLeft 								; left code if pressed
+0503  22                		dec 	R2 											; store 6 on TOS
+0504  F8 06             		ldi 	6
+0506  52                		str 	r2
+0507  62                		out 	2 											; select key 6
+0508  36 27             		b3 		MVB_AccRight 								; right code if pressed
+
+                        															; no keys pressed, deaccelerate velocity to zero.
+050A  04                		ldn 	r4 											; read velocity
+050B  32 33             		bz 		MVB_AddVelocity 							; if zero, no need to deaccelerate
+050D  FE                		shl 												; put velocity sign in DF
+050E  F8 FF             		ldi 	-1
+0510  3B 14             		bnf 	MVB_DeAcc2 									; if +ve use -1
+0512  F8 01             		ldi 	1
+0514                    MVB_DeAcc2:
+0514  E4                		sex 	r4 											; add the deacceleartion value to R4
+0515  F4                		add
+0516                    MVB_UpdateVelocity:
+0516  54                		str 	r4
+0517  30 33             		br 		MVB_AddVelocity
+
+0519                    MVB_AccLeft: 												; accelerate left.
+0519  04                		ldn 	r4 	 										; -2 from velocity
+051A  FF 02             		smi 	2
+051C  54                		str 	r4
+051D  FA F8             		ani 	$F8											; check at limit
+051F  FB F8             		xri 	$F8
+0521  32 33             		bz		MVB_AddVelocity
+0523  F8 F8             		ldi 	-8
+0525  30 16             		br 		MVB_UpdateVelocity
+
+0527                    MVB_AccRight: 												; accelerate right
+0527  04                		ldn 	r4 	 										; +2 to velocity
+0528  FC 02             		adi 	2
+052A  54                		str 	r4
+052B  FA F8             		ani 	$F8
+052D  32 33             		bz		MVB_AddVelocity
+052F  F8 08             		ldi 	8
+0531  30 16             		br 		MVB_UpdateVelocity
+
+0533                    MVB_AddVelocity:
+0533  04                		ldn		r4 											; read velocity
+0534  24                		dec 	r4 											; point R4 at bat position.
+0535  22                		dec 	r2 											; store velocity on stack
+0536  E2                		sex 	r2
+0537  52                		str 	r2
+0538  32 4F             		bz 		MVB_NoMove 									; if zero, not moving.
+053A  FE                		shl 												; shift MSB into DF
+053B  33 48             		bdf 	MVB_MoveLeft  								; if set, velocity is -ve, so move left.
+
+053D  04                		ldn 	r4 											; get bat position (moving right)
+053E  F4                		add 												; add velocity stored on stack.
+053F  54                		str 	r4 											; write back
+0540  FC 18             		adi 	24 											; reached RHS ?
+0542  3B 4F             		bnf 	MVB_NoMove 									; if not, then completed
+0544  F8 E7             		ldi 	255-24 										; if yes, put at RH Edge
+0546  30 4E             		br 		MVB_Update
+
+0548                    MVB_MoveLeft:												; get bat position (moving left)
+0548  04                		ldn 	r4
+0549  F4                		add 												; add velocity
+054A  33 4E             		bdf 	MVB_Update 									; update and save if space to move
+054C  F8 00             		ldi 	0 											; otherwise left hand edge.
+054E                    MVB_Update:
+054E  54                		str 	r4 											; update bat position
+054F                    MVB_NoMove:
+054F  12                		inc 	r2 											; restore stack.
+
+0550  F8 86             		ldi 	ExtraLifeFlag 								; point R4 to the extra life flag
+0552  A4                		plo 	r4
+0553  04                		ldn 	r4 											; read it
+0554  32 65             		bz 		MVB_NoExtraLife 							; if zero then no extra life
+0556  F8 00             		ldi 	0 											; clear extra life flag
+0558  54                		str 	r4
+0559  F8 83             		ldi 	Lives 										; point R4 to lives
+055B  A4                		plo 	r4
+055C  04                		ldn 	r4 											; read lives
+055D  FB 03             		xri 	3 		 									; already have 3 ?
+055F  32 65             		bz 		MVB_NoExtraLife 							; can't have any more
+0561  04                		ldn 	r4 											; increment lives
+0562  FC 01             		adi 	1
+0564  54                		str 	r4
+0565                    MVB_NoExtraLife:
+0565  D5                		sep 	r5 											; redraw bat
+
+0566  D3                		sep 	r3 											; adn ex
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;				Checks for collisions - removes and disables colliding Bombs, incrementing score
+                        ;
+                        ;	Breaks:	R4,RA,RD,RE
+                        ;	Returns to R3
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0567                    CheckCollision:
+0567  92                		ghi 	r2 										; Point RA to the Bat Position
+0568  B4                		phi 	r4
+0569  BA                		phi 	ra
+056A  F8 84             		ldi 	BatPosition
+056C  AA                		plo 	ra
+056D  F8 00             		ldi 	BombList 								; R4 points to the bomblist.
+056F  A4                		plo 	r4
+0570                    CC_Loop:
+0570  04                		ldn 	r4 										; read first bomb position
+0571  FE                		shl												; shift MSB into DF
+0572  33 C4             		bdf		CC_Next 								; if set do next
+
+0574  14                		inc 	r4 										; point R4 to the address which is a byte position
+0575  04                		ldn 	r4 										; get that byte position
+0576  FA 07             		ani 	7
+0578  FE                		shl 											; it is now a nibble position (x 2)
+0579  24                		dec 	r4 										; point back at the nibble offset (0/1)
+057A  E4                		sex 	r4 					
+057B  F4                		add 											; add that, we now have a nibble position 0-15		
+057C  FE                		shl 											; multiply it by 16
+057D  FE                		shl
+057E  FE                		shl
+057F  FE                		shl
+0580  FC 08             		adi 	8										; screen width 256, pixel width therefore 4, 2 pixels therefore 8.
+0582  EA                		sex 	ra
+0583  F7                		sm 	 	 										; subtract bat position from it.
+0584  FF 0E             		smi 	14 										; subtract half the bat width (3.5 pixels)
+0586  33 8A             		bdf 	CC_NotNegative 							; if it's not negative skip next instruction
+0588  FD 00             		sdi 	0 										; negate it,1 to balance collision
+058A                    CC_NotNegative:											; D now has |batx - bombx|
+058A  FF 16             		smi		22										; bat width 7 pixels, or 28 units, ball width 4 or 16 units, gap is half of 28+16 = 22
+058C  33 C4             		bdf 	CC_Next 								; if >= 22 then no collision.
+
+058E  14                		inc 	r4 										; read the bomb byte position
+058F  04                		ldn 	r4
+0590  24                		dec 	r4
+0591  FF A0             		smi		20*8 									; is it far enough down ?
+0593  3B C4             		bnf 	CC_Next 								; if not, skip collision
+
+0595  D7                		sep 	r7 										; erase bomb
+0596  F8 FF             		ldi 	$FF 									; mark it as deleted.
+0598  54                		str 	r4
+
+0599  94                		ghi 	r4 										; point RE to bombs to hit.		
+059A  BE                		phi 	re	
+059B  F8 88             		ldi 	BombsToHit
+059D  AE                		plo 	re
+059E  0E                		ldn 	re 										; decrement bombs-to-hit score
+059F  FF 01             		smi 	1
+05A1  5E                		str 	re 										; completed level when this reaches zero.
+05A2  1E                		inc 	re 										; point RE at points per hit
+05A3  4E                		lda 	re 										; read that in, bump to score LSB
+05A4                    CC_IncrementScore:
+05A4  EE                		sex		re 										; add to next digit of score.
+05A5  F4                		add 	
+05A6  5E                		str 	re
+05A7  FF 0A             		smi 	10 										; is it >= 10
+05A9  3B BE             		bnf 	CC_ScoreEnd
+05AB  5E                		str 	re 										; write it back
+05AC  1E                		inc 	re 										; move to the next digit
+05AD  8E                		glo 	re 										; look at the LSB
+05AE  FB 8D             		xri		Score+3 								; carrying into 1000's ? (+0 = 1, +1 = 10, +2 = 100,+3 = 1000) 	
+05B0  3A BA             		bnz		CC_NoExtraLife   						; technically going beyond 999,999 could cause a problem. Won't happen :)
+
+05B2  9E                		ghi 	re 										; point Rd to the extra life flag
+05B3  BD                		phi 	rd
+05B4  F8 86             		ldi 	ExtraLifeFlag
+05B6  AD                		plo 	rd
+05B7  F8 01             		ldi 	1 										; set the extra life flag to '1'.
+05B9  5D                		str 	rd
+
+05BA                    CC_NoExtraLife:
+05BA  F8 01             		ldi 	1 										; and complete the carry.
+05BC  30 A4             		br 		CC_IncrementScore
+
+05BE                    CC_ScoreEnd:
+05BE  F8 CD             		ldi 	Studio2BeepTimer 						; short beep.
+05C0  AE                		plo 	re
+05C1  F8 03             		ldi 	3
+05C3  5E                		str 	re
+
+05C4  84                CC_Next:glo 	r4 										; point to next bomb record
+05C5  FC 05             		adi 	BombRecSize 					
+05C7  A4                		plo 	r4
+05C8  FB 32             		xri 	BombListEnd 							; reached the end.
+05CA  3A 70             		bnz 	CC_Loop
+05CC  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;									LFSR Random Number Generator (seed in RF throughout)
+                        ;
+                        ; Returns to : R6
+                        ;
+                        ; ***************************************************************************************************************************************
+
+05CD  9F                Random:	ghi 	rf 										; galois LFSR. Shift seed right into DF
+05CE  F6                		shr
+05CF  BF                		phi 	rf
+05D0  8F                		glo 	rf
+05D1  76                		shrc
+05D2  AF                		plo 	rf
+05D3  3B D9             		bnf 	RN_NoXor
+05D5  9F                		ghi 	rf 										; if LSB was set then xor high byte with $B4
+05D6  FB B4             		xri 	$B4
+05D8  BF                		phi 	rf
+05D9                    RN_NoXor:
+05D9  8F                		glo 	rf
+05DA  D6                		sep 	r6
+05DB  30 CD             		br 		Random
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Initialise a Level
+                        ;	
+                        ;	Breaks RD,RE,R4
+                        ;	Returns R3.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+05DD                    InitialiseLevel:
+05DD  F8 09             		ldi 	VideoPage 									; clear video RAM
+05DF  B4                		phi 	r4
+05E0  F8 00             		ldi 	0
+05E2  A4                		plo 	r4
+05E3                    IL_Clear:
+05E3  F8 00             		ldi		0
+05E5  54                		str 	r4
+05E6  14                		inc 	r4
+05E7  84                		glo 	r4
+05E8  3A E3             		bnz 	IL_Clear
+05EA  92                		ghi 	r2 											; point R4 to Bomb List
+05EB  B4                		phi 	r4
+
+05EC  F8 00             		ldi 	BombList 									; erase the bomb list (fill with $FF)
+05EE  A4                		plo 	r4
+05EF                    IL_ClearBombList:
+05EF  F8 FF             		ldi 	$FF
+05F1  54                		str 	r4
+05F2  14                		inc 	r4
+05F3  84                		glo 	r4
+05F4  FB 32             		xri 	BombListEnd
+05F6  3A EF             		bnz 	IL_ClearBombList
+
+05F8  F8 90             		ldi 	Level 										; put level into RE.0
+05FA  A4                		plo 	r4
+05FB  04                		ldn 	r4
+05FC  AE                		plo 	re
+
+05FD  F8 80             		ldi 	LoseFlag									; set all the control values.
+05FF  A4                		plo 	r4
+
+0600  F8 00             		ldi 	0 											; clear lose flag ($80)
+0602  54                		str 	r4
+0603  14                		inc 	r4
+0604  54                		str 	r4  										; clear sync counter ($81)
+0605  14                		inc 	r4
+0606  54                		str 	r4 											; clear move counter ($82)
+0607  14                		inc 	r4
+0608  14                		inc 	r4
+0609  F8 80             		ldi 	128 										; put bat in the middle ($84)
+060B  54                		str 	r4
+060C  F8 00             		ldi 	0 											; set bat velocity to zero ($85)
+060E  14                		inc 	r4
+060F  54                		str 	r4
+0610  14                		inc 	r4
+0611  54                		str 	r4 											; clear extra life flag ($86)
+0612  14                		inc 	r4
+
+0613  8E                		glo 	re 											; retrieve level in RE.0
+0614  FE                		shl 												; calculate number as 24 + level * 4 (32..60 per level 1-9)
+0615  FE                		shl 												; max level is 50 :)
+0616  FC 18             		adi 	24
+0618  54                		str 	r4
+0619  14                		inc 	r4
+061A  54                		str 	r4
+061B  14                		inc 	r4
+061C  8E                		glo 	re 											; points per level == level # stored in RE.0
+061D  54                		str 	r4
+
+061E  F8 91             		ldi 	BomberPosition 								; reset the bomber position.
+0620  A4                		plo 	r4
+0621  F8 08             		ldi 	8
+0623  54                		str 	r4
+
+0624  D5                		sep 	r5 											; draw the bat
+
+0625  E2                		sex 	r2
+0626  22                		dec 	r2 											; select key 0
+0627  F8 00             		ldi 	0
+0629  52                		str 	r2
+062A  62                		out 	2
+062B                    IL_WaitGo: 													; wait for the 'go' key.
+062B  1F                		inc 	rf 											; seed the RNG.
+062C  3E 2B             		bn3 	IL_WaitGo
+
+062E  F8 FF             		ldi 	$FF 										; reset the R9 synchroniser.
+0630  B9                		phi 	r9
+0631  A9                		plo 	r9
+
+0632  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Create a new bomb (if available)
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0633                    CreateBomb:
+0633  92                		ghi 	r2 		 									; point RD to Move Counter
+0634  BD                		phi 	rd
+0635  B4                		phi 	r4
+0636  F8 82             		ldi 	MoveCounter
+0638  AD                		plo 	rd
+0639  0D                		ldn 	rd 											; if it is non zero don't move.
+063A  3A 9B             		bnz 	CBM_Exit
+063C  F8 87             		ldi 	BombsToDrop 								; any more bombs to drop ?
+063E  AD                		plo 	rd
+063F  0D                		ldn 	rd
+0640  32 9B             		bz 		CBM_Exit 			 						; if bombs to drop zero then exit.
+
+0642  F8 05             		ldi 	>Random 									; set RA to point to the random code
+0644  BA                		phi 	ra
+0645  F8 CD             		ldi 	<Random
+0647  AA                		plo 	ra
+
+0648  F8 91             		ldi 	BomberPosition 								; point RD to bomber position
+064A  AD                		plo 	rd
+064B  0D                		ldn 	rd 											; read it, put in RE.0
+064C  AE                		plo 	re
+064D  DA                		sep 	ra 											; random number
+064E  FA 02             		ani 	2 											; now 0 or 2
+0650  FF 01             		smi 	1 											; now -1 or 1
+0652  ED                		sex 	rd 											; add to position
+0653  F4                		add
+0654  5D                		str 	rd 											; write back
+0655  FA F0             		ani 	$F0 										; in range 0-15
+0657  32 5B             		bz 		CMB_BomberOk
+0659  8E                		glo 	re 											; no restore position
+065A  5D                		str 	rd
+065B                    CMB_BomberOk:
+
+065B  DA                		sep 	ra 											; get a random number
+065C  FA 0F             		ani 	15 											; one time in 15
+065E  3A 9B             		bnz		CBM_Exit
+
+0660  F8 00             		ldi 	BombList 									; point R4 to BombList
+0662  A4                		plo 	r4
+0663                    CBM_Find:
+0663  04                		ldn 	r4 											; read first byte
+0664  FE                		shl  												; if bit 7 set it is free, so use it.
+0665  33 71             		bdf 	CBM_Found
+0667  84                		glo 	r4 											; advance to next bomb
+0668  FC 05             		adi 	BombRecSize
+066A  A4                		plo 	r4
+066B  FB 32             		xri 	BombListEnd 								; if not reached end try again
+066D  3A 63             		bnz 	CBM_Find
+066F  30 9B             		br 		CBM_Exit 									; no free slots, exit
+
+
+0671                    CBM_Found:
+0671  F8 91             		ldi 	BomberPosition 								; RD points to bomber position
+0673  AD                		plo 	rd
+0674  0D                		ldn 	rd 											; read bomber position
+0675  FA 01             		ani 	1 											; left or right half
+0677  54                		str 	r4 											; save in nibble record (+0)
+0678  14                		inc 	r4
+0679  0D                		ldn 	rd 											; read bomber position
+067A  F6                		shr 												; put in correct range
+067B  54                		str 	r4 											; save in position (+1)
+067C  14                		inc 	r4
+
+
+067D  F8 02             		ldi 	<BombGraphic1 								; save bomb graphic 1 pointer in graphic (+2)
+067F  54                		str 	r4
+0680  14                		inc 	r4
+
+0681  F8 90             		ldi 	Level 										; point RD to level
+0683  AD                		plo 	rd
+0684  0D                		ldn		rd 											; read level
+0685  FE                		shl 												; multiply by 16
+0686  FE                		shl
+0687  FE                		shl
+0688  FE                		shl
+0689  FC 5A             		adi 	90 											; add 90: L1 = 106, L9 = 234
+068B  3B 8F             		bnf		CBM_NoMaxSpeed
+068D  F8 FF             		ldi 	255 										; max out at 255, as fast as you can go.
+068F                    CBM_NoMaxSpeed:
+068F  54                		str 	r4 											; save speed in speed (+3)
+
+0690  24                		dec 	r4 											; point to start of record.
+0691  24                		dec 	r4
+0692  24                		dec 	r4
+0693  D7                		sep 	r7 											; draw it
+
+0694  F8 87             		ldi 	BombsToDrop 								; decrement bombs to drop counter
+0696  A4                		plo 	r4
+0697  04                		ldn 	r4
+0698  FF 01             		smi 	1
+069A  54                		str 	r4
+
+069B                    CBM_Exit:
+069B  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;												Draw All Bombs (or Erase All Bombs)
+                        ;
+                        ;	Breaks : RD,RE (Draw subroutine) R4
+                        ;	Returns: R3
+                        ;
+                        ; ***************************************************************************************************************************************
+
+069C                    ExplodeAllBombs:
+069C  F8 08             		ldi 	RamPage 									; make R4 point to the Bomb List
+069E  B4                		phi 	r4
+069F  F8 00             		ldi 	BombList
+06A1  A4                		plo 	r4
+06A2                    EAB_Loop:
+06A2  D7                		sep 	r7 											; erase the bomb
+06A3  14                		inc 	r4 											; point to graphic
+06A4  14                		inc 	r4
+06A5  F8 0E             		ldi 	<Explosion 									; put explosion there.
+06A7  54                		str 	r4
+06A8  24                		dec 	r4
+06A9  24                		dec 	r4
+06AA  D7                		sep 	r7 											; redraw the bomb
+06AB  84                		glo 	r4 											; advance R4 to the next bomb record
+06AC  FC 05             		adi 	BombRecSize
+06AE  A4                		plo 	r4
+06AF  FB 32             		xri 	<BombListEnd 								; reached end of the bomb list ?
+06B1  3A A2             		bnz 	EAB_Loop
+06B3  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											Write byte D to RE. Add 8 to RE
+                        ;
+                        ; ***************************************************************************************************************************************
+
+06B4                    WriteDisplayByte:
+06B4  5E                		str 	re 											; save result
+06B5  8E                		glo 	re 											; down one row
+06B6  FC 08             		adi 	8
+06B8  AE                		plo 	re
+06B9  D3                		sep 	r3
+06BA  30 B4             		br 		WriteDisplayByte
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														M A I N    P R O G R A M
+                        ;
+                        ; ***************************************************************************************************************************************
+
+06E0                    		.org	StartCode+$2E0
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ; 														Set everything up
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+06E0                    StartGame:
+06E0  F8 FF             		ldi 	$0FF 									; initialise the Stack to $2FF
+06E2  A2                		plo		r2 										; from $2CF.
+06E3  F8 08             		ldi 	RAMPage
+06E5  B2                		phi 	r2
+
+06E6  F8 04             		ldi 	>DrawBomb 								; make R7 point to the bomb drawing routine
+06E8  B7                		phi 	r7 										; keeps this throughout.
+06E9  F8 34             		ldi 	<DrawBomb								
+06EB  A7                		plo 	r7
+06EC  F8 04             		ldi 	>DrawBat 								; make R5 point to the bat drawing routine
+06EE  B5                		phi 	r5
+06EF  F8 A9             		ldi 	<DrawBat
+06F1  A5                		plo 	r5
+
+06F2  F8 83             		ldi 	Lives 									; Point RD to Lives, reset to 3.
+06F4  AD                		plo 	rd
+06F5  92                		ghi 	r2 										; retrieve RAM page.
+06F6  BD                		phi 	rd
+06F7  F8 03             		ldi 	3
+06F9  5D                		str 	rd
+
+06FA  F8 90             		ldi 	Level 									; Point RD to Level, reset to 1.
+06FC  AD                		plo 	rd
+06FD  F8 01             		ldi 	1
+06FF  5D                		str 	rd
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;														New Level
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0700                    NewLevel:
+0700  F8 05             		ldi 	>InitialiseLevel 						; Initialise the level
+0702  B6                		phi 	r6
+0703  F8 DD             		ldi 	<InitialiseLevel
+0705  A6                		plo 	r6
+0706  D6                		sep 	r6
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;												Outer loop, checks before moving
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0707                    MainLoop:
+0707  92                		ghi 	r2 										; point RE to "lost"
+0708  BE                		phi 	re
+0709  F8 80             		ldi 	LoseFlag
+070B  AE                		plo 	re
+070C  0E                		ldn 	re 										; read lost flag
+070D  3A 4D             		bnz 	LoseLife
+070F  F8 88             		ldi 	BombsToHit 								; check if all bombs have been hit.
+0711  AE                		plo 	re
+0712  0E                		ldn 	re
+0713  32 44             		bz 		LevelCompleted
+
+0715  22                		dec 	r2 										; space on stack
+0716  F8 00             		ldi 	<BombList 								; save the LSB of the Bomb List on the Stack.
+0718  52                		str 	r2
+
+0719  F8 05             		ldi 	>CheckCollision 						; Check Collisions.
+071B  B6                		phi 	r6
+071C  F8 67             		ldi 	<CheckCollision
+071E  A6                		plo 	r6
+071F  D6                		sep 	r6
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;												Inner loop, move all bombs
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0720                    MoveAllBombs:											; move all of them
+
+0720  F8 06             		ldi 	>CreateBomb 							; bomb creation check (same rate as bat move)
+0722  B6                		phi 	r6
+0723  F8 33             		ldi 	<CreateBomb
+0725  A6                		plo 	r6
+0726  D6                		sep 	r6
+
+0727  F8 04             		ldi 	>MoveBat 								; R6 points to Move the Bat routine
+0729  B6                		phi 	r6
+072A  F8 EA             		ldi 	<MoveBat
+072C  A6                		plo 	r6
+072D  D6                		sep 	r6 										; And Move it
+
+072E  92                		ghi 	r2 										; Make R4 point to the current bomb
+072F  B4                		phi		r4
+0730  02                		ldn 	r2 										; get the bomb pointer out of the stack entry
+0731  A4                		plo 	r4
+
+0732  F8 04             		ldi 	>MoveBomb 								; R6 points to MoveBomb subroutine
+0734  B6                		phi		r6
+0735  F8 60             		ldi 	<MoveBomb
+0737  A6                		plo 	r6		
+0738  D6                		sep		r6 										; and move it.
+
+0739  02                		ldn 	r2 										; reload the bomb pointer LSB
+073A  FC 05             		adi 	BombRecSize 							; add offset to next record and update
+073C  52                		str 	r2
+073D  FB 32             		xri 	BombListEnd 							; reached the end
+073F  3A 20             		bnz 	MoveAllBombs
+
+0741  12                		inc 	r2 										; reclaim space off stack
+0742  30 07             		br		MainLoop 								; keep going .....
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;											Come here when level completed
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0744                    LevelCompleted:
+0744  F8 90             		ldi 	Level 									; access level counter
+0746  AE                		plo 	re
+0747  0E                		ldn 	re 										; increment it
+0748  FC 01             		adi 	1
+074A  5E                		str 	re
+074B  30 00             		br 		NewLevel
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;															  Life lost
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+074D                    LoseLife:
+074D  F8 06             		ldi 	>ExplodeAllBombs 						; explode all the bombs.
+074F  B6                		phi 	r6
+0750  F8 9C             		ldi 	<ExplodeAllBombs
+0752  A6                		plo 	r6
+0753  D6                		sep 	r6
+
+0754  92                		ghi 	r2
+0755  BE                		phi 	re
+0756  F8 CD             		ldi 	Studio2BeepTimer 						; long warble
+0758  AE                		plo 	re
+0759  F8 78             		ldi 	120
+075B  5E                		str 	re
+075C                    LoseLifeWait: 											; wait for it .....
+075C  0E                		ldn 	re
+075D  3A 5C             		bnz 	LoseLifeWait
+
+075F  F8 83             		ldi 	Lives 									; point RE to lives counter
+0761  AE                		plo 	re
+0762  0E                		ldn 	re 										; read lives
+0763  FF 01             		smi 	1 										; subtract one
+0765  5E                		str 	re 										; save result
+0766  3A 00             		bnz 	NewLevel 								; some left, try again with fewer lives
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;														Game Over, Display Score
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0768                    GameOver:
+0768  92                		ghi 	r2 										; point RD to the score.
+0769  BD                		phi 	rd
+076A  F8 8A             		ldi 	Score
+076C  AD                		plo 	rd
+076D  F8 06             		ldi 	6 										; make 3 LSBs of E 110 (screen position)
+076F  AE                		plo 	re
+0770  F8 06             		ldi 	>WriteDisplayByte 						; point RA to the byte-writer
+0772  BA                		phi 	ra
+0773  F8 B4             		ldi 	<WriteDisplayByte
+0775  AA                		plo 	ra
+
+0776                    ScoreWriteLoop:
+0776  8E                		glo 	re 										; convert 3 LSBs of RE to screen address
+0777  FA 07             		ani 	7
+0779  FC 58             		adi 	128-40
+077B  AE                		plo 	re
+077C  F8 09             		ldi 	VideoPage 								; put in video page
+077E  BE                		phi 	re
+
+077F  4D                		lda 	rd 										; read next score digit
+0780  FC 10             		adi 	$10 									; score table offset in BIOS
+0782  A4                		plo 	r4
+0783  F8 02             		ldi 	$02 									; read from $210+n
+0785  B4                		phi 	r4
+0786  04                		ldn 	r4 										; into D, the new offset
+0787  A4                		plo 	r4 										; put into R4, R4 now contains 5 rows graphic data
+
+0788  F8 05             		ldi 	5 										; set R5.0 to 6
+078A  A5                		plo 	r5
+078B                    OutputChar:
+078B  44                		lda 	r4 										; read character and advance
+078C  F6                		shr 											; centre in byte
+078D  F6                		shr
+078E  DA                		sep 	ra 										; output it
+078F  25                		dec 	r5 										; decrement counter
+0790  85                		glo 	r5
+0791  3A 8B             		bnz 	OutputChar 								; loop back if nonzero
+
+0793  2E                		dec 	re 										; previous value of 3 LSBs.
+0794  8E                		glo 	re
+0795  FA 07             		ani 	7
+0797  3A 76             		bnz 	ScoreWriteLoop
+
+0799                    Stop:													; game ends, press RESET to play again.
+0799  30 99             		br 		Stop
+
+07FF                            .org    07FFh                   				; fill it to 1,024 bytes.
+07FF  FF                        .db     0FFh
+0800                            .end
+
+
+00000 Total Error(s)
+
+BATGRAPHIC         0414    BATPOSITION        0084 E  BATSPEED           0004 E
+BATVELOCITY        0085 E  BOMBERPOSITION     0091 E  BOMBGRAPHIC1       0402
+BOMBGRAPHIC2       0408    BOMBLIST           0000 E  BOMBLISTEND        0032 E
+BOMBMAX            000A E  BOMBMOVESPERFRAME  0004 E  BOMBRECSIZE        0005 E
+BOMBSCOREEACH      0089 E  BOMBSTODROP        0087 E  BOMBSTOHIT         0088 E
+CBM_EXIT           069B    CBM_FIND           0663    CBM_FOUND          0671
+CBM_NOMAXSPEED     068F    CC_INCREMENTSCORE  05A4    CC_LOOP            0570
+CC_NEXT            05C4    CC_NOEXTRALIFE     05BA    CC_NOTNEGATIVE     058A
+CC_SCOREEND        05BE    CHECKCOLLISION     0567    CMB_BOMBEROK       065B
+CREATEBOMB         0633    DBT_EXIT           04E6    DBT_LOOP           04CA
+DB_DRAWCOMPLETED   045C    DB_EXIT            045D    DB_PLOTBOMB        044E
+DB_RIGHTHANDNIBBLE 0440    DRAWBAT            04A9    DRAWBOMB           0434
+EAB_LOOP           06A2    EXPLODEALLBOMBS    069C    EXPLOSION          040E
+EXTRALIFEFLAG      0086 E  GAMEOVER           0768    IL_CLEAR           05E3
+IL_CLEARBOMBLIST   05EF    IL_WAITGO          062B    INITIALISELEVEL    05DD
+LEVEL              0090 E  LEVELCOMPLETED     0744    LIVES              0083 E
+LOSEFLAG           0080 E  LOSELIFE           074D    LOSELIFEWAIT       075C
+MAINLOOP           0707    MB_EXIT            049C    MB_MOVECOUNTERZERO 0493
+MB_NOTLOST         0480    MB_NOTMOVING       0488    MB_SYNCWAIT        04A0
+MB_SYNCWITHFRAMECOUNTER                       049D    MOVEALLBOMBS       0720
+MOVEBAT            04EA    MOVEBOMB           0460    MOVECOUNTER        0082 E
+MVB_ACCLEFT        0519    MVB_ACCRIGHT       0527    MVB_ADDVELOCITY    0533
+MVB_DEACC2         0514    MVB_EXIT           04E9    MVB_MOVELEFT       0548
+MVB_NOEXTRALIFE    0565    MVB_NOMOVE         054F    MVB_UPDATE         054E
+MVB_UPDATEVELOCITY 0516    NEWLEVEL           0700    OUTPUTCHAR         078B
+R0                 0000 E  R1                 0001 E  R2                 0002 E
+R3                 0003 E  R4                 0004 E  R5                 0005 E
+R6                 0006 E  R7                 0007 E  R8                 0008 E
+R9                 0009 E  RA                 000A E  RAMPAGE            0008 E
+RANDOM             05CD    RB                 000B E  RC                 000C E
+RD                 000D E  RE                 000E E  RF                 000F E
+RN_NOXOR           05D9    SCORE              008A E  SCOREWRITELOOP     0776
+STARTCODE          0400    STARTGAME          06E0    STOP               0799
+STUDIO2BEEPTIMER   00CD E  SYNCCOUNTER        0081 E  VIDEOPAGE          0009 E
+WRITEDISPLAYBYTE   06B4

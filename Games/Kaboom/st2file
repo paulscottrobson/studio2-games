@@ -1,0 +1,12 @@
+;
+;	New ST2 File Builder
+;
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR004
+TITLE:Kaboom
+BINARY:kaboom.st2
+SOURCE:kaboom.asm.bin
+CODE:400,4
+
+

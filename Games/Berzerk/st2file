@@ -1,0 +1,13 @@
+;
+;	New ST2 File Builder
+;
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR008
+TITLE:Berzerk
+BINARY:berzerk.st2
+SOURCE:berzerk.asm.bin
+CODE:400,4
+CODE:C00,2
+
+

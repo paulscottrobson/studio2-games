@@ -1,0 +1,1826 @@
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											PACMAN - For the RCA Studio 2 (1802 Assembler)
+                        ;											==============================================
+                        ;
+                        ;	Author : 	Paul Robson (paul@robsons.org.uk)
+                        ;	Tools :		Assembles with asmx cross assembler http://xi6.com/projects/asmx/
+                        ;
+                        ;	Note: 		This is the first >1k RCA Studio 2 Game. It just won't fit in 1k - unless you ridiculously simplify the game.
+                        ;				It is designed to fit in 1.5k ROM. Some features have been lost, noteably no extra life for 10,000 points
+                        ; 				and the basic score display.
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;       Reserved for Studio 2 BIOS : 	R0,R1,R2,R8,R9,RB.0
+                        ;
+                        ;		Other usage
+                        ;		===========
+                        ;		R2 		Used for Stack, therefore R2.1 always points to RAM Page.
+                        ;       R3      PC (lowest level)
+                        ;		R4 		PC (First level call)
+                        ; 		R5 		PC (Second Level Call)
+                        ;		R7 		Points to sound counter.
+                        ; 		RA 		Points to the current sprite
+                        ;
+                        ;		1802 Porting notes:
+                        ;
+                        ;		(1) Keypad I/O is done via the ScanKeypad routine. Because of Branch boundaries it may be simpler to rename this routine
+                        ;			DeadScanKeypad and create a functionally equivalent one for the target machine. Though the Cosmac VIP one might work
+                        ; 			with BN3 becoming B3 (as the Cosmac VIP has an inverted return value). On an Elf keyboard latch it will probably work
+                        ; 			quite well, because Pacman controls are changes of direction of a moving object. (use the IN button for the '0' bit.)
+                        ;
+                        ;		(2) 2 pages of RAM are required. One is a data page, the other a video page rendered in the normal 64x32 1861 fashion.
+                        ;			It doesn't matter where these are on a 1802 machine, the locations given are fixed by the RCA Studio 2. All other
+                        ; 			code is ROMmable (though if it does run in RAM it doesn't matter)
+                        ;
+                        ;		(3) This image is over 1k long. Thus it is chopped up into two parts (look through the file for the origins). These can be
+                        ; 			anywhere in memory, this particular layout is again for the Studio 2. Game ROM is at $400-$7FF,$A00-$BFF.
+                        ;
+                        ;		(4) Sound. R7 throughout points to a counter. This should be decremented every video frame, and a sound effect played
+                        ; 			if this is non-zero (e.g. basically an n/50th sound counter). This is done automatically by the Video Routine in the
+                        ;			S2. If you ignore it it doesn't matter but make sure writes to R7 don't muck anything up.
+                        ;
+                        ;		(5) There is no use of other S2 counters or the R9 frame tick register.
+                        ;
+                        ;		(6) The Program expects to start with P = 3 running from StartGame: there is a little preamble at the start which is
+                        ; 			the S2's jump vector.
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ; 											SPRITE RECORD (0 = Player, 1-4 = Ghost, 5 = Bonus)
+                        ;
+                        ;	+0 		X position in pixels (0,0 is top left)
+                        ;	+1 		Y position in pixels
+                        ;	+2 		Last Drawn/New Image - when something is drawn the graphic is put here for erasing.
+                        ;	+3 		Movement direction (4 bits, same bit patterns as walls UDLR)
+                        ;	+4 		Legal movements this turn (4 bits, same as +3), bit 7 is set if the sprite is at a junction (x % 6 == 0, y % 5 == 0)
+                        ;	+5,+6 	High,Low : Method to call (call via R5,return to R4) to select the sprite to be used.
+                        ; 	+7,+8 	High,Low : Method (as above) to select the new movement direction
+                        ;	+9,+10 	High,Low : Method (as above) Call this if it collides with sprite 0 (which is the player sprite)
+                        ; 	+11 	Cell Number (e.g. offset in maze table, only valid when legal movements bit 7 is set.)
+                        ;	+12..13 (X,Y) position of the old position.
+                        ;	+14..15	Status bytes for the sprite object (if needed)
+                        ;
+                        ; ***************************************************************************************************************************************
+
+      = 0008            RamPage	= 8													; 256 byte RAM page used for Data ($800 on S2)
+      = 0009            VideoPage = 9												; 256 byte RAM page used for Video ($900 on S2)
+
+      = 0080            FramesPerChasingTimer = 128									; number of moves allowed when chasing ghosts.
+      = 00C0            BonusRate = 192 											; bonus frame counter goes 0-255 - bonus visible 192-255
+
+      = 00CD            Studio2BeepTimer = $CD 										; Studio 2 Beep Counter
+
+                        ;
+                        ; 	Working copy of the maze data in first 60 bytes. Must be at zero, game requires this.
+                        ;
+      = 0000            MazeData = 0 												
+                        ;
+                        ;	These data allocations should be moved very carefully as some code relies on them being arranged in this order.
+                        ;
+      = 0040            Lives = $40 												; Number of remaining lives
+      = 0041            Level = $41 												; Current Level
+      = 0042            RandomSeed = $42 											; Random Seed Value (2 bytes)
+      = 0044            EatCounter = $44 											; Number of pills to eat remaining in this level.
+      = 0046            Score = $46 												; Score (6 digits, most significant first)
+      = 004C            Frame = $4C 												; Frame count.
+      = 004D            Keyboard = $4D 												; Last read keyboard state.
+
+                        ;
+                        ;	These are zeroed at the start of each level. These variables must go $10 bytes before the sprite storage
+                        ;
+      = 0050            LostLife = $50 												; set to non-zero when life lost.
+      = 0051            GhostCaughtCounter = $51 									; score for next ghost caught (in 100s)
+      = 0052            ChasingTimer = $52 											; decrements to zero - if non-zero ghosts are under attack.
+      = 0053            BonusFrameCounter = $53 									; tracks bonus frames.
+      = 0054            Death = $54 												; set to non-zero when died (e.g. ghost collision)
+      = 0055            Outstanding100Points = $55 									; the number of outstanding units of 100 points to be added to the score
+                        ;
+                        ;	These are the six sprites : Player (0) Ghosts (1-4) Bonus (5) all of which are 16 bytes ong
+                        ;
+                        ;	Note : moving these forward may cause problems due to the S2s $8CD-$8CF timers altering data :(
+                        ;
+      = 0060            SpriteStorage = $60 										; Sprites are stored from $60-$C0 (there are 6 of them)
+      = 0010            SpriteRecordSize = 16 										; 16 bytes per sprite record
+      = 0006            SpriteCount = 6 											; Six sprites
+      = 00C0            SpriteStorageEnd = SpriteStorage + (SpriteRecordSize*SpriteCount)
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Studio 2 Boot Code
+                        ;	
+                        ; ***************************************************************************************************************************************
+
+0000                        	.include "1802.inc"
+      = 0000            r0      = 0
+      = 0001            r1      = 1
+      = 0002            r2      = 2
+      = 0003            r3      = 3
+      = 0004            r4      = 4
+      = 0005            r5      = 5
+      = 0006            r6      = 6
+      = 0007            r7      = 7
+      = 0008            r8      = 8
+      = 0009            r9      = 9
+      = 000A            ra      = 10
+      = 000B            rb      = 11
+      = 000C            rc      = 12
+      = 000D            rd      = 13
+      = 000E            re      = 14
+      = 000F            rf      = 15
+
+0400                        	.org    400h										; ROM code in S2 starts at $400.
+0400                    StartCode:
+0400  0D25                  	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Pacman Maze Data
+                        ;
+                        ;	A 10x6 array of bytes (each pacman square is 6 x 5 pixels) for each square, as follows:
+                        ;
+                        ;	Bit 0:	Wall Present up
+                        ;	Bit 1:  Wall Present left
+                        ;	Bit 2: 	Wall Present right
+                        ;	Bit 3:	Wall Present down
+                        ;	Bit 4:  True if offset n is divisible by 5
+                        ;	Bit 5:  True if offset n is divisible by 6
+                        ;	Bit 6:	True if Power-pill here
+                        ;	Bit 7: 	(Altered by program) true if power pill or dot present on board.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0402                    LevelData:
+0402                    		.include "mapbytes.inc"
+0402  F3818981 8D9BA189         .db     $f3,$81,$89,$81,$8d,$9b,$a1,$89,$81,$c5
+040A  81C5
+040C  9686A388 85938885         .db     $96,$86,$a3,$88,$85,$93,$88,$85,$a6,$86
+0414  A686
+0416  9A848683 A8988586         .db     $9a,$84,$86,$83,$a8,$98,$85,$86,$82,$8c
+041E  828C
+0420  B9808486 0B1DA682         .db     $b9,$80,$84,$86,$0b,$1d,$a6,$82,$80,$89
+0428  8089
+042A  938CAA88 8593888C         .db     $93,$8c,$aa,$88,$85,$93,$88,$8c,$aa,$85
+0432  AA85
+0434  DA898989 28188989         .db     $da,$89,$89,$89,$28,$18,$89,$89,$89,$cc
+043C  89CC
+043E                    LevelDataEnd:
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Graphics all 5 x 4 bit.
+                        ;	
+                        ; ***************************************************************************************************************************************
+
+043E   (0002)           	align 	4 												; put graphic on a four byte boundary.
+
+0440                    Graphics:
+
+0440                    Pellet:
+0440  00200000          		.db 	$00,$20,$00,$00
+0444                    PowerPill:
+0444  00707000          		.db 	$00,$70,$70,$00
+0448                    PacmanClosed:
+0448  70F8F870          		.db 	$70,$F8,$F8,$70
+044C                    PacmanUp:	
+044C  50F8F870          		.db 	$50,$F8,$F8,$70
+0450                    PacmanDown:
+0450  70F8F850          		.db 	$70,$F8,$F8,$50
+0454                    PacmanLeft:
+0454  70383870          		.db 	$70,$38,$38,$70
+0458                    PacmanRight:
+0458  70E0E070          		.db 	$70,$E0,$E0,$70
+045C                    Ghost1:
+045C  70A8F850          		.db 	$70,$A8,$F8,$50
+0460                    Ghost2:
+0460  70A8F8A8          		.db 	$70,$A8,$F8,$A8
+0464                    GhostReverse:
+0464  70888850          		.db 	$70,$88,$88,$50
+0468                    Cherry:
+0468  4020D8D8          		.db 	$40,$20,$D8,$D8
+046C                    Blank:
+046C  00000000          		.db 	$00,$00,$00,$00
+
+0470  00000000          		.db 	0,0,0,0 									; spare - removing it causes page boundary problems.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;		 Shift/XOR Drawer for 5 bit x 1 line of graphics. There are 8 entry points each representing one pixel shift, 2 bytes apart
+                        ;
+                        ;	On Entry, 	D 		contains the bits to shift, undefined on exit.
+                        ;			  	RF 		points to the first byte of the two to Xor (should remain unchanged)
+                        ;				RE.L	is undefined on entry and exit
+                        ;				RE.H 	is undefined on entry and exit.
+                        ;
+                        ;	This is the only third level subroutine. It's run pointer doesn't matter, but it returns to R5
+                        ;	Note:  you cannot 'loop' subroutine this because you don't know what the entry point was - there are 8 entries and 2 exits :)
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0474                    ShiftXORDrawerBase:
+0474  30 9B             		br 		SXD0 										; Shift 0 bits right
+0476  30 9A             		br 		SXD1 										; Shift 1 right (etc.)
+0478  30 99             		br 		SXD2
+047A  30 98             		br 		SXD3 										; up to here, only requires one byte
+047C  30 9F             		br 		SXD4 										; shift 4-5 => 3 Shift Rights, then 1-2 16 bit shift rights
+047E  30 A8             		br 		SXD5
+0480  30 8A             		br 		SXD6										; shift 6-7 => swap and 1-2 shift lefts
+
+0482                    SXD7:														; shift right x 7 == swap and shift left one in 16 bits
+0482  FE                		shl 												; shift result left, MSB into DF
+0483  AE                		plo 	re 											; this is the second byte of data
+0484  F8 00             		ldi 	0 											; set D = DF, e.. the old MSB is the LSB of this byte	
+0486  7E                		shlc
+0487  BE                		phi 	re 											; RE.H RE.L now is a 7 bit shift.
+0488  30 BB             		br 		SXDXorWord
+
+048A                    SXD6:														; shift right x 7 == swap and shift left twice in 16 bits
+048A  FE                		shl 												; (this part same as for SXD7)
+048B  AE                		plo 	re 												
+048C  F8 00             		ldi 	0 												
+048E  7E                		shlc
+048F  BE                		phi 	re 											; RE.H RE.L now is a 7 bit shift.
+0490  8E                		glo 	re 											; shift it once more to the left
+0491  FE                		shl
+0492  AE                		plo 	re
+0493  9E                		ghi 	re
+0494  7E                		shlc
+0495  BE                		phi 	re
+0496  30 BB             		br 		SXDXorWord
+
+0498                    SXD3:														; shift right x 3
+0498  F6                		shr
+0499                    SXD2:														; shift right x 2
+0499  F6                		shr
+049A                    SXD1:														; shift right x 2
+049A  F6                		shr
+049B                    SXD0:														; shift right x 1
+049B  EF                		sex 	rf 											; xor with the first screen byte
+049C  F3                		xor
+049D  5F                		str 	rf
+049E  D5                		sep 	r5 											; there are 2 exit points
+
+049F                    SXD4: 														; shift right x 4
+049F  F6                		shr
+04A0  F6                		shr
+04A1  F6                		shr
+04A2  BE                		phi 	re 											; RE now contains 16 bit graphic
+04A3  F8 00             		ldi 	0
+04A5  AE                		plo 	re
+04A6  30 B5             		br 		SXD4_2
+
+04A8                    SXD5: 														; shift right x 5
+04A8  F6                		shr
+04A9  F6                		shr
+04AA  F6                		shr
+04AB  BE                		phi 	re 											; RE now contains 16 bit graphic
+04AC  F8 00             		ldi 	0
+04AE  AE                		plo 	re
+04AF                    SXD5_2:
+04AF  9E                		ghi 	re 											; shift RE right once, 16 bits.
+04B0  F6                		shr
+04B1  BE                		phi 	re
+04B2  8E                		glo 	re
+04B3  76                		shrc
+04B4  AE                		plo 	re
+
+04B5                    SXD4_2:
+04B5  9E                		ghi 	re 											; shift RE right once, 16 bits.
+04B6  F6                		shr
+04B7  BE                		phi 	re
+04B8  8E                		glo 	re
+04B9  76                		shrc
+04BA  AE                		plo 	re
+
+04BB                    SXDXorWord:
+04BB  EF                		sex 	rf 											; index on RF
+04BC  1F                		inc 	rf 											; Xor RE.L into RF+1
+04BD  8E                		glo 	re
+04BE  F3                		xor
+04BF  73                		stxd
+04C0  9E                		ghi 	re 											; Xor RE.H into RF
+04C1  F3                		xor
+04C2  5F                		str 	rf 									
+04C3  D5                		sep 	r5 											; Note, 2 exit points.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														 Keypad Scanner
+                        ;
+                        ; 	Scans keyboard for 2,4,6,8,0 returned in bits 0,1,2,3,7 respectively. Note correlation between these bits (Up,Left,Right,Down)
+                        ;	and the bit patterns in the map. 0 is used to start.
+                        ;
+                        ;	High Level Call, returns to R3. Breaks RF.
+                        ;
+                        ;	PORT: Changing this can easily throw "Branch out of Range" errors where 1802 branches cross page. It may be better to either
+                        ; 		  pad it out to the same length or simply completely replace it.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+04C4                    ScanKeypad:
+04C4  F8 02             		ldi 	2 											; start off by scanning '2'
+04C6  BF                		phi 	rf 											; this value goes in RF.
+04C7  E2                		sex 	r2
+04C8  F8 00             		ldi 	0 											; initial value in RF.
+04CA  AF                		plo 	rf
+04CB                    SKBLoop:
+04CB  9F                		ghi 	rf 											; get current scan value.
+04CC  22                		dec 	r2 											; store the scanned value on the stack.
+04CD  52                		str 	r2
+04CE  62                		out 	2 											; select that latch
+
+04CF  9F                		ghi 	rf 											; shift scan left ready for next time
+04D0  FC 02             		adi 	2 											; 2,4,6,8,10,12,14,16 but scan only uses lower 4 bits
+04D2  BF                		phi 	rf
+04D3  8F                		glo 	rf 											; get the current value
+04D4  F6                		shr 												; shift right.
+04D5  3E D9             		bn3 	SKBSkip
+04D7  F9 80             		ori		$80 										; if key pressed or with $80, 7 shifts will make this $01 (for '2')
+04D9                    SKBSkip:
+04D9  AF                		plo 	rf 											; save the current value
+04DA  9F                		ghi 	rf 											; read the scan value
+04DB  FB 12             		xri 	$12 										; if reached $12 then finished
+04DD  3A CB             		bnz 	SKBLoop
+04DF  8F                		glo 	rf 											; load the keypad result into D
+04E0  FA 8F             		ani 	$8F 										; we are only interested in 0,1,2,3,7, throw the rest.
+04E2  D3                		sep 	r3 											; and exit
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;										LFSR Random Number Generator (breaks RF)
+                        ;
+                        ; Returns to : R5 Breaks RF. Reentrant subroutine.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+04E3  92                Random:	ghi 	r2 											; point RF to the Seed Data (2nd byte)
+04E4  BF                		phi 	rf
+04E5  F8 43             		ldi 	RandomSeed+1
+04E7  AF                		plo 	rf
+04E8  EF                		sex		rf 											; use RF as index register
+
+04E9  0F                		ldn 	rf 											; load the 2nd byte
+04EA  F6                		shr 												; shift right into DF
+04EB  73                		stxd 												; store and point to first byte
+04EC  0F                		ldn 	rf 											; rotate DF into it and out
+04ED  76                		shrc
+04EE  5F                		str 	rf
+04EF  3B F6             		bnf 	RN_NoXor
+04F1  1F                		inc 	rf 											; if LSB was set then xor high byte with $B4
+04F2  0F                		ldn 	rf
+04F3  FB B4             		xri 	$B4
+04F5  73                		stxd 												; store it back and fix up RF again.
+04F6                    RN_NoXor:
+04F6  0F                		ldn 	rf 											; re-read the LSB
+04F7  1F                		inc 	rf
+04F8  F4                		add 												; add the high byte.
+04F9  D5                		sep 	r5 											; and exit.
+04FA  30 E3             		br 		Random
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Sprite Plotting Routine
+                        ;
+                        ; 	Second Level, returns to r4, runs under R5.
+                        ;	Breaks: RE (xordrawer), RF (position), RB.1, RC but RD is unchanged, so is D.
+                        ;	On entry: RD.0 = x, RD.1 = y, D = Graphic LSB. Position (0,0) puts the sprite in the top left corner of the board e.g. (1,1) on the
+                        ; 	screen
+                        ;
+                        ;	SpriteLoadAndPlot loads RD.0,RD.1 and D with [RA],[RA+1],[RA+2]
+                        ;
+                        ;	Testing : did 3 x 10240 plot/erases in 23s (about 133 per second)
+                        ; ***************************************************************************************************************************************
+
+04FC  000000            		.db 	0,0,0 										; padding - required for branches
+
+04FF                    SpriteLoadAndPlot:											; this loads the plot data from RA then fixes RA.
+04FF  4A                		lda 	ra
+0500  AD                		plo 	rd 											; first byte in RD.0 (X)
+0501  4A                		lda 	ra
+0502  BD                		phi 	rd 											; second byte in RD.1 (Y)
+0503  0A                		ldn 	ra 											; third byte in D (graphic)
+
+0504  2A                		dec 	ra 											; fix R3
+0505  2A                		dec 	ra
+
+0506                    SpritePlot:
+0506  32 4C             		bz 		SPRP_NoPlot 								; if graphic is zero then do nothing at all
+0508  22                		dec 	r2 											; save the graphic address on the stack
+0509  52                		str 	r2
+050A  8D                		glo 	rd 											; range check
+050B  FC C9             		adi 	-55
+050D  33 4A             		bdf 	SPRP_Exit
+050F  9D                		ghi 	rd
+0510  FC E6             		adi 	-26
+0512  33 4A             		bdf 	SPRP_Exit
+
+0514  8D                		glo 	rd 											; calculate the position. We add 1 because the top left pixel (0,0) is at (1,1) physically
+0515  FC 01             		adi 	1 			
+0517  FA 07             		ani 	7 											; this is the shift amount we need to use.
+0519  FE                		shl 												; multiply by 2
+051A  FC 74             		adi 	<ShiftXORDrawerBase 						; now the LSB of the routine we need to call to shift.
+051C  BB                		phi 	rb 											; save in RB.1, which is not used by the interrupt routine.
+
+051D  8D                		glo 	rd 											; get the X position, again
+051E  FC 01             		adi 	1 											; add the (1,1) fix
+0520  F6                		shr
+0521  F6                		shr
+0522  F6                		shr 												; now a byte offset
+0523  22                		dec 	r2 											; save at TOS
+0524  52                		str 	r2
+0525  9D                		ghi 	rd 											; get the Y offset
+0526  FE                		shl 												; multiply by 8
+0527  FE                		shl
+0528  FE                		shl
+0529  E2                		sex 	r2 											; add the byte offset to it.
+052A  F4                		add
+052B  12                		inc 	r2 											; fix the stack back.
+052C  FC 08             		adi 	8 											; again, the fix needed because (0,0) is (1,1) this fixes vertically.
+052E  AF                		plo 	rf 											; make RF point to the screen
+052F  F8 09             		ldi 	VideoPage
+0531  BF                		phi 	rf
+
+0532                    SPRP_Loop:
+0532  9B                		ghi 	rb 											; put the routine address in RC. RB.1 was its LSB
+0533  AC                		plo 	rc
+0534  F8 04             		ldi 	>ShiftXORDrawerBase							; its MSB is a constant.
+0536  BC                		phi 	rc
+
+0537  02                		ldn 	r2 											; read the graphic address into RE.
+0538  AE                		plo 	re
+0539  F8 04             		ldi 	>Graphics 								
+053B  BE                		phi 	re
+053C  0E                		ldn 	re 											; read the graphic byte from RE
+
+053D  DC                		sep 	rc 											; call the XOR plotter.
+
+053E  8F                		glo 	rf 											; move RF to next line down
+053F  FC 08             		adi 	8
+0541  AF                		plo 	rf
+
+0542  02                		ldn 	r2 											; point to next graphics line.
+0543  FC 01             		adi 	1
+0545  52                		str 	r2
+0546  FA 03             		ani 	3 											; graphics are aligned on address 4, so when this is zero we have drawn it.
+0548  3A 32             		bnz		SPRP_Loop
+
+054A                    SPRP_Exit:
+054A  02                		ldn 	r2 											; restore D
+054B  12                		inc 	r2 											; fix up the stack.
+054C                    SPRP_NoPlot:
+054C  D4                		sep 	r4 											; and return.
+054D  30 06             		br  	SpritePlot
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Level Initialisation
+                        ;
+                        ; (1) Copy Map Data into first 60 bytes of memory, setting the 'power pill' bit.
+                        ; (2) Clear the screen
+                        ; (3) Scan the map drawing upper and left walls as required
+                        ; (4) Draw the bottom line (not covered by 3)
+                        ; (5) Draw the right line (not covered by 3)
+                        ; (6) Draw the 'lives' on the far right in the 3 pixels unused
+                        ; (7) Fix the 'den' in the RAM Map so Pacmen can leave but no-one can enter
+                        ; (8) Draw all the dots and power pills
+                        ; (9) Reset the 'dots to eat' counter.
+                        ; (10) Initialise the Game Object Area
+                        ;
+                        ; ***************************************************************************************************************************************
+
+054F                    InitialiseLevel:
+054F  92                		ghi 	r2 											; point RD,RF to mazedata copy area in RAM
+0550  BF                		phi 	rf
+0551  BD                		phi 	rd
+0552  F8 00             		ldi 	MazeData
+0554  AF                		plo 	rf
+0555  AD                		plo 	rd
+0556  F8 04             		ldi 	>LevelData 									; point RE to the original copy.
+0558  BE                		phi 	re
+0559  F8 02             		ldi 	<LevelData
+055B  AE                		plo 	re
+055C                    IL_CopyMazeData:
+055C  4E                		lda 	re 											; read from original and bump RE
+055D  5F                		str 	rf 											; save in maze RAM
+055E  1F                		inc 	rf 											; bump RF
+055F  8E                		glo 	re 											; reached the end of maze data
+0560  FB 3E             		xri 	<LevelDataEnd
+0562  3A 5C             		bnz 	IL_CopyMazeData
+
+0564  AE                		plo 	re 											; set RE,RF = Video RAM Pointer
+0565  AF                		plo 	rf
+0566  F8 09             		ldi 	VideoPage
+0568  BE                		phi 	re
+0569  BF                		phi 	rf
+056A                    IL_ClearScreen: 			
+056A  8F                		glo 	rf 											; clear the screen (RF.0 = 0, RF.1 = $09)
+056B  5E                		str 	re
+056C  1E                		inc 	re
+056D  8E                		glo 	re
+056E  3A 6A             		bnz 	IL_ClearScreen
+
+0570                    IL_DrawCellResetMask:
+                        															; RD points to maze data. RF points to video RAM.
+0570  F8 80             		ldi 	$80 										; set mask in RE.1 - so VRAM | BIT is the current pixel.
+0572  BE                		phi 	re
+
+0573                    IL_DrawCell:
+0573  0D                		ldn 	rd 											; read maze data entry
+0574  FA 02             		ani 	$02 										; is there a left wall ?
+0576  32 8B             		bz 		IL_NoLeftWall
+
+0578  F8 05             		ldi 	5 											; draw 5 lines down.
+057A  AE                		plo 	re 											; re.0 is the counter
+057B                    IL_DrawLeftWall:
+057B  EF                		sex 	rf 											; set the bit in [RF] e.g. video RAM
+057C  9E                		ghi 	re 											; read the mask
+057D  F1                		or 													; or into VRAM.
+057E  5F                		str 	rf
+057F  8F                		glo 	rf 											; down one line.
+0580  FC 08             		adi 	8
+0582  AF                		plo 	rf
+0583  2E                		dec 	re 											; decrement counter
+0584  8E                		glo 	re
+0585  3A 7B             		bnz 	IL_DrawLeftWall 							; do 6 vertical wall elements.
+0587  8F                		glo 	rf 											; fix RF back
+0588  FF 28             		smi 	40
+058A  AF                		plo 	rf 											; back where it started.
+058B                    IL_NoLeftWall:
+058B  4D                		lda 	rd 											; read maze data entry again, bump the pointer
+058C  FA 01             		ani 	1 											; now 1 if wall, 0 if clear.
+058E  32 92             		bz 		IL_MaskZero
+0590  F8 FF             		ldi 	$FF 							
+0592                    IL_MaskZero:												; now $FF if wall, $00 if clear
+0592  22                		dec 	r2 											; store the mask on the stack
+0593  52                		str 	r2
+0594  F8 06             		ldi 	6 											; set the counter (RE.0) to 6 (number to draw)
+0596  AE                		plo 	re 	
+0597                    IL_UpperWall:
+0597  E2                		sex 	r2
+0598  9E                		ghi 	re 											; get mask.
+0599  F2                		and 												; and with mask on stack so set or clear.
+059A  EF                		sex 	rf
+059B  F1                		or  												; or into screen
+059C  5F                		str 	rf
+059D  9E                		ghi 	re 											; read mask
+059E  F6                		shr 												; shift right
+059F  3B A3             		bnf 	IL_NotNext 									; if DF zero, not shifted bit into it.
+05A1  76                		shrc 												; shift it back into bit 7
+05A2  1F                		inc 	rf 											; next byte
+05A3                    IL_NotNext:
+05A3  BE                		phi 	re 											; store mask back in RE.1
+05A4  2E                		dec 	re 											; do it 'upperwall' times.
+05A5  8E                		glo 	re
+05A6  3A 97             		bnz 	IL_UpperWall
+
+05A8  9E                		ghi 	re 											; draw the last one always.
+05A9  EF                		sex 	rf
+05AA  F1                		or
+05AB  5F                		str 	rf
+
+05AC  12                		inc 	r2 											; fix stack back.
+05AD  8F                		glo 	rf 											; reached the right hand byte ?
+05AE  FA 07             		ani 	7
+05B0  FB 07             		xri 	7
+05B2  3A 73             		bnz 	IL_DrawCell 								; keep going until row complete.
+05B4  8F                		glo 	rf 											; look at lower byte.
+05B5  FC 21             		adi 	1+4*8 										; shift right one and down by 4 rows.
+05B7  AF                		plo 	rf
+05B8  FC 10             		adi 	16
+05BA  3B 70             		bnf 	IL_DrawCellResetMask						; not finished draw with reinitialised mask.
+
+05BC  F8 F0             		ldi 	$F0 										; fill in the bottom line.
+05BE  AF                		plo 	rf
+05BF                    IL_BottomRow:
+05BF  F8 FF             		ldi 	$FF
+05C1  5F                		str 	rf
+05C2  1F                		inc 	rf
+05C3  8F                		glo 	rf
+05C4  FA 07             		ani		7
+05C6  3A BF             		bnz		IL_BottomRow
+05C8  2F                		dec 	rf 											; refix the last row.
+05C9  F8 F8             		ldi 	$F8
+05CB  5F                		str 	rf
+
+05CC  F8 00             		ldi 	$00 										; point RF to the top line.
+05CE  AF                		plo 	rf
+05CF                    IL_RightSide:
+05CF  0F                		ldn 	rf 											; read the right side
+05D0  FE                		shl  												; put bit 7 (e.g. the leftmost bit) into DF
+05D1  8F                		glo 	rf 											; move to right side same line.
+05D2  F9 07             		ori 	7
+05D4  AF                		plo 	rf
+05D5  3B DB             		bnf 	IL_NoSetRight	 							; nothing on the right
+05D7  0F                		ldn 	rf
+05D8  F9 08             		ori 	8
+05DA  5F                		str 	rf
+05DB                    IL_NoSetRight:
+05DB  1F                		inc 	rf 											; now first on next row.
+05DC  8F                		glo 	rf
+05DD  3A CF             		bnz 	IL_RightSide
+05DF  2F                		dec 	rf 											; rf now pointing to VRAM again.
+
+05E0  F8 40             		ldi 	Lives 										; RD now points to lives
+05E2  AD                		plo 	rd
+05E3  0D                		ldn 	rd
+05E4  32 FE             		bz 		IL_NoLives 									; if zero, no lives.
+05E6  AE                		plo 	re 											; store lives in RE.0
+05E7  F8 0F             		ldi 	$0F 										; RF where first life is going
+05E9  AF                		plo 	rf
+
+05EA                    IL_DrawLifeMarkers:
+05EA  0F                		ldn 	rf 											; draw life marker.
+05EB  F9 02             		ori 	2
+05ED  5F                		str 	rf
+05EE  8F                		glo 	rf
+05EF  FC 08             		adi 	8
+05F1  AF                		plo 	rf
+05F2  0F                		ldn 	rf
+05F3  F9 01             		ori 	1
+05F5  5F                		str 	rf
+05F6  8F                		glo 	rf
+05F7  FC 10             		adi 	16
+05F9  AF                		plo 	rf
+
+05FA  2E                		dec 	re
+05FB  8E                		glo 	re
+05FC  3A EA             		bnz 	IL_DrawLifeMarkers
+05FE                    IL_NoLives:
+
+05FE  F8 22             		ldi 	34 											; RD now points to the first 'den'
+0600  AD                		plo 	rd
+0601  0D                		ldn 	rd 											; clear up bits on 34,35 (the pacman den)
+0602  FA FE             		ani 	$FE 		 								; so the Pacmen can move up through there
+0604  5D                		str 	rd 											; but it's not possible to move back down.
+0605  1D                		inc 	rd
+0606  0D                		ldn 	rd
+0607  FA FE             		ani 	$FE 		
+0609  5D                		str 	rd
+
+060A  F8 00             		ldi 	0 											; set RD.0,RD.1 to zero (0,0)
+060C  BD                		phi 	rd
+060D  AD                		plo 	rd
+060E  92                		ghi 	r2 											; make RA point to the Map in RAM
+060F  BA                		phi 	ra
+0610  F8 00             		ldi 	<MazeData
+0612  AA                		plo 	ra
+
+0613  F8 05             		ldi 	>SpritePlot 								; set R5 to the sprite plotter
+0615  B5                		phi 	r5
+0616  F8 06             		ldi 	<SpritePlot
+0618  A5                		plo 	r5
+
+0619                    IL_DrawPills:
+0619  4A                		lda 	ra 											; read from the maze, advance maze pointer
+061A  FE                		shl
+061B  3B 25             		bnf 	IL_NoPill									; if bit 7 clear , no pill here.
+061D  FE                		shl 												; powerpill flag in DF.
+061E  F8 40             		ldi 	<Pellet
+0620  3B 24             		bnf 	IL_IsPellet
+0622  F8 44             		ldi 	<PowerPill
+0624                    IL_IsPellet:
+0624  D5                		sep 	r5
+0625                    IL_NoPill:
+0625  8D                		glo 	rd
+0626  FC 06             		adi 	6
+0628  AD                		plo 	rd
+0629  FB 3C             		xri 	60
+062B  3A 19             		bnz 	IL_DrawPills
+062D  AD                		plo 	rd
+062E  9D                		ghi 	rd
+062F  FC 05             		adi 	5
+0631  BD                		phi 	rd
+0632  FB 1E             		xri 	30
+0634  3A 19             		bnz 	IL_DrawPills
+
+0636  F8 44             		ldi 	<EatCounter 								; set RA to point to eat counter - RA.1 points to RAM page
+0638  AA                		plo 	ra
+0639  F8 38             		ldi 	60-2-2 										; 6 x 10 maze, -2 for the den, -2 for the start squares.
+063B  5A                		str 	ra
+
+063C  F8 50             		ldi 	<SpriteStorage-$10							; set RA to point to Sprite Storage/Flags and clear it out.
+063E  AA                		plo 	ra
+063F                    IL_ClearSpriteStorage:
+063F  F8 00             		ldi 	$00
+0641  5A                		str 	ra
+0642  1A                		inc 	ra
+0643  8A                		glo 	ra
+0644  FB C0             		xri 	<SpriteStorageEnd
+0646  3A 3F             		bnz 	IL_ClearSpriteStorage
+
+0648  F8 60             		ldi 	<SpriteStorage 								; point RA to the sprite storage
+064A  AA                		plo 	ra
+
+064B  F8 06             		ldi 	>InitialiseObject 							; point R5 to the Initialise Object Routine
+064D  B5                		phi 	r5
+064E  F8 5E             		ldi 	<InitialiseObject
+0650  A5                		plo 	r5
+
+0651  F8 00             		ldi 	<PlayerInitialiseData 						; do one player
+0653  D5                		sep 	r5
+0654  F8 08             		ldi 	<GhostInitialiseData 						; four ghosts
+0656  D5                		sep 	r5
+0657  D5                		sep 	r5
+0658  D5                		sep 	r5
+0659  D5                		sep 	r5
+065A  F8 10             		ldi 	<BonusInitialiseData 						; and one bonus
+065C  D5                		sep 	r5
+
+065D  D3                		sep 	r3 											; and initialisation is STILL not over.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;			Initialise object from data (LSB in D) to RA. Preserve D on exit. RA on exit should point to the next sprite.
+                        ;
+                        ;	Runs in R5, returns to R4. Breaks D,RE,RD
+                        ;
+                        ; ***************************************************************************************************************************************
+
+065E                    InitialiseObject:
+065E  AD                 		plo 	rd 											; save pointer in RD.0 and RE.0
+065F  AE                 		plo 	re
+0660  F8 0C              		ldi 	>PlayerInitialiseData 						; make RE point to initialisation data
+0662  BE                 		phi 	re
+0663  EE                 		sex 	re 											; use RE as index register
+0664  72                 		ldxa 												; copy 3 bytes in directly.
+0665  5A                 		str 	ra 											; +0 (x)
+0666  1A                 		inc 	ra
+
+0667  72                 		ldxa 												; +1 (y)
+0668  5A                 		str 	ra
+0669  1A                 		inc 	ra
+
+066A  1A                 		inc 	ra 											; shift ra to +5
+066B  1A                 		inc 	ra
+066C  1A                 		inc 	ra
+
+066D                    IOB_Copy:
+066D  72                 		ldxa  												; copy in the call vectors
+066E  5A                 		str 	ra
+066F  1A                 		inc 	ra
+0670  8A                 		glo 	ra
+0671  FA 0F              		ani 	15
+0673  FB 0B              		xri 	11 											; up to 11 where hey stop
+0675  3A 6D              		bnz		IOB_Copy
+
+0677  8A                 		glo 	ra 											; advance RA pointer to end of record
+0678  FC 05              		adi 	SpriteRecordSize-11
+067A  AA                 		plo 	ra
+
+067B  8D                 		glo 	rd 											; recover old D value from RD.0 and return.
+067C  D4                		sep 	r4
+067D  30 5E             		br 		InitialiseObject
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Move the Sprite pointed to by RA
+                        ;
+                        ;	First level subroutine, runs in R4, returns to R3, preserves RA.
+                        ;
+                        ;	(1) Checks what legal moves are possible from the current position
+                        ;	(2) Erase the current sprite
+                        ;	(3) Call routine to get new sprite movement requested.
+                        ; 	(4) And with legal moves
+                        ;	(5) If zero try the previous move instead, this too anded with legal moves.
+                        ;	(6) Adjust the sprite position with the results of 4 and 5.
+                        ;	(7) If collision with Player sprite Call routine to handle collisions.
+                        ;	(8) Call routine to get the new sprite.
+                        ;	(9) Redraw sprite in new position
+                        ;	
+                        ; ***************************************************************************************************************************************
+
+067F                    MoveSprite:
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;												  Update the legal moves record entry
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+067F  F8 06             		ldi 	>UpdateLegalMoves 							; Call the update legal moves routine.
+0681  B5                		phi 	r5
+0682  F8 F8             		ldi 	<UpdateLegalMoves
+0684  A5                		plo 	r5
+0685  D5                		sep 	r5
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;														Erase the current sprite
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0686  F8 04             		ldi 	>SpriteLoadAndPlot 							; erase sprite
+0688  B5                		phi 	r5
+0689  F8 FF             		ldi 	<SpriteLoadAndPlot
+068B  A5                		plo 	r5
+068C  D5                		sep 	r5
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;					 Call vector to get new sprite movement (8,4,2,1 format), and with legal move mask and store
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+068D  8A                		glo 	ra 											; RC = RA + 7 (address of movement reading code.)
+068E  FC 07             		adi 	7
+0690  AC                		plo 	rc
+0691  9A                		ghi 	ra
+0692  BC                		phi 	rc
+0693  4C                		lda 	rc 											; Copy Call Address into R5
+0694  B5                		phi 	r5
+0695  4C                		lda 	rc
+0696  A5                		plo 	r5
+0697  D5                		sep 	r5 											; call the function to read it into D.
+0698  FA 0F             		ani		$0F 										; only interested in lower 4 bits.
+
+069A  1A                		inc 	ra 											; move to RA+4 which is the mask for allowable moves
+069B  1A                		inc 	ra
+069C  1A                		inc 	ra
+069D  1A                		inc 	ra
+069E  EA                		sex 	ra 											; and the allowable mask with the required mask.
+069F  F2                		and
+06A0  3A A6             		bnz 	MSP_MoveOkay  								; if legal move save in slot.
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;									If move is zero, i.e. not possible retry the last move.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+06A2  0A                		ldn 	ra 											; no move - get LAST move
+06A3  2A                		dec 	ra 											; and with legal move
+06A4  F2                		and
+06A5  1A                		inc 	ra 											; then save that
+
+06A6                    MSP_MoveOkay:
+06A6  2A                		dec 	ra
+06A7  5A                		str 	ra
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;												Adjust the sprite coordinates
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+06A8  F8 07             		ldi 	>SpriteShift 								; make R5 point to the code that actually adjusts positions.
+06AA  B5                		phi 	r5
+06AB  F8 44             		ldi 	<SpriteShift
+06AD  A5                		plo 	r5
+
+06AE  0A                		ldn 	ra 											; reload the actual move back into D
+06AF  2A                		dec 	ra 											; fix up so RA is pointing back where it should be (start of record)
+06B0  2A                		dec 	ra
+06B1  2A                		dec 	ra
+06B2  D5                		sep 	r5
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;											Check for collisions with sprite 0 (player sprite)
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+06B3  8A                		glo 	ra 											; check if the first sprite e.g. the player
+06B4  FB 60             		xri 	SpriteStorage
+06B6  32 E0             		bz 		MSP_NotFirst 								; if it is then collision checks are somewhat pointless.
+
+06B8  92                		ghi 	r2 											; point RD to sprite 0.
+06B9  BD                		phi 	rd
+06BA  F8 60             		ldi 	SpriteStorage
+06BC  AD                		plo 	rd
+
+06BD  EA                		sex 	ra 											; calculate |P0.x - P.x|
+06BE  4D                		lda 	rd
+06BF  F7                		sm
+06C0  33 C4             		bdf 	MSP_NoSign1
+06C2  FD 00             		sdi 	0
+06C4                    MSP_NoSign1:
+06C4  22                		dec 	r2 											; save on stack
+06C5  52                		str 	r2
+
+06C6  0D                		ldn 	rd 											; calculate |P0.y-P.y|
+06C7  1A                		inc 	ra
+06C8  F7                		sm
+06C9  2A                		dec 	ra
+06CA  33 CE             		bdf 	MSP_NoSign2
+06CC  FD 00             		sdi 	0
+06CE                    MSP_NoSign2:
+06CE  E2                		sex 	r2 											; add to TOS, this is the absolute distance.
+06CF  F4                		add
+06D0  12                		inc 	r2 											; fix up stack.
+
+06D1  FF 04             		smi 	4 											; collision if total distance < 4
+06D3  33 E0             		bdf 	MSP_NotFirst
+
+06D5  8A                		glo 	ra 											; RC = RA + 9 (address of collision handling code.)
+06D6  FC 09             		adi 	9
+06D8  AC                		plo 	rc
+06D9  9A                		ghi 	ra
+06DA  BC                		phi 	rc
+06DB  4C                		lda 	rc 											; Copy Call Address into R5
+06DC  B5                		phi 	r5
+06DD  4C                		lda 	rc
+06DE  A5                		plo 	r5
+06DF  D5                		sep 	r5 											; call the function to read it into D.
+
+06E0                    MSP_NotFirst:
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;													Call vector to get new sprite graphic
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+06E0  8A                		glo 	ra 											; RC = RA + 5 (address of sprite reading code.)
+06E1  FC 05             		adi 	5
+06E3  AC                		plo 	rc
+06E4  9A                		ghi 	ra
+06E5  BC                		phi 	rc
+06E6  4C                		lda 	rc 											; Copy Call Address into R5
+06E7  B5                		phi 	r5
+06E8  4C                		lda 	rc
+06E9  A5                		plo 	r5
+06EA  D5                		sep 	r5 											; call the function to read it into D.
+06EB  1A                		inc 	ra 											; store it in RA[2] which is the drawing sprite.
+06EC  1A                		inc 	ra
+06ED  5A                		str 	ra
+06EE  2A                		dec 	ra 				
+06EF  2A                		dec  	ra
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ; 																Redraw the sprite
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+06F0  F8 04             		ldi 	>SpriteLoadAndPlot 							; redraw sprite
+06F2  B5                		phi 	r5
+06F3  F8 FF             		ldi 	<SpriteLoadAndPlot
+06F5  A5                		plo 	r5
+06F6  D5                		sep 	r5
+
+06F7  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;	Update the "legal moves" element of the sprite record (RA). If at a "junction" store the index and old position in the record.
+                        ;
+                        ;	Second level, runs in R5. Breaks RD,RE,RF
+                        ;
+                        ; ***************************************************************************************************************************************
+
+06F8                    UpdateLegalMoves:
+06F8  F8 00             		ldi 	0 											; RE.0 is the return value
+06FA  AE                		plo 	re
+06FB  0A                		ldn 	ra 											; read x position
+06FC  AD                		plo 	rd 											; point RD to the map table
+06FD  92                		ghi 	r2 									
+06FE  BD                		phi 	rd
+06FF  0D                		ldn 	rd 											; read the entry in the lookup table.
+0700  FA 20             		ani 	$20 										; if divisible by 6 bit 5 is set
+0702  3A 0A             		bnz 	ULM_MoveVertical 							; if it is, we can move vertically
+0704  8E                		glo 	re
+0705  F9 06             		ori 	$02+$04  									; if not, it must be horizontal move (or I've cocked up)
+0707  AE                		plo 	re 											; so set bits 1 and 2 (left and right)
+0708  30 3D             		br 		ULM_Exit 									; and we can't be on a wall.
+
+070A                    ULM_MoveVertical:
+070A  8E                		glo 	re 											; if moving vertical is okay (X % 6 == 0) set bits 0,3
+070B  F9 09             		ori 	$01+$08 									; (up and down)
+070D  AE                		plo 	re
+
+070E  1A                		inc 	ra 											; get the Y position
+070F  0A                		ldn 	ra
+0710  2A                		dec  	ra
+0711  AF                		plo 	rf 											; save in RF.0 for later.
+0712  AD                		plo 	rd 											; point it into the map table.
+0713  0D                		ldn 	rd 											; read that
+0714  FA 10             		ani 	$10 										; this bit set if divisible by 5.
+0716  32 3D             		bz 		ULM_Exit 									; exit if not - if x % 6 == 0 and y % 5 == 0 we are at a junction point.
+
+0718  8F                		glo 	rf 											; read RF which is the Y position
+0719  FE                		shl 												; now Y is Y / 5 * 10 - we know Y/5 is a whole number
+071A  AD                		plo 	rd 											; RD points to MAP[Y*10]
+071B  0A                		ldn 	ra 											; read the X position
+071C                    ULM_Divide:
+071C  32 23             		bz 		ULM_DivideEnd 								; reached 0, RD now points to MAP[X+Y*10] where X and Y are cell numbers.
+071E  1D                		inc 	rd
+071F  FC FA             		adi 	-6
+0721  30 1C             		br 		ULM_Divide
+0723                    ULM_DivideEnd:
+0723  0D                		ldn 	rd 											; read that cell - tells us what moves are legal here - this returns bit set for walls
+0724  FA 0F             		ani 	$0F 										; isolate wall bits
+0726  FB 0F             		xri 	$0F 										; toggle wall bits to open bits.
+0728  F9 80             		ori 	$80  										; set bit 7, which marks it as a 'junction' point
+072A  AE                		plo 	re 											; that is the returned value.
+
+072B  92                		ghi 	r2 											; point R2 to RA+11 - the cell index number
+072C  BF                		phi 	rf
+072D  8A                		glo 	ra
+072E  FC 0B             		adi 	11
+0730  AF                		plo 	rf
+0731  8D                		glo 	rd 											; retrieve the index number and write it.
+0732  5F                		str 	rf
+
+0733  92                		ghi 	r2 											; make RD point to the current position
+0734  BD                		phi 	rd
+0735  8A                		glo 	ra
+0736  AD                		plo 	rd
+
+0737  4D                		lda 	rd 											; copy X,Y to RA+12,RA+13
+0738  1F                		inc 	rf
+0739  5F                		str 	rf
+073A  4D                		lda 	rd
+073B  1F                		inc 	rf
+073C  5F                		str 	rf
+
+073D                    ULM_Exit:
+073D  8A                		glo 	ra 											; RD points to legal moves entry.
+073E  FC 04             		adi 	4
+0740  AD                		plo 	rd
+0741  8E                		glo 	re 											; copy legal moves into that record entry
+0742  5D                		str 	rd 			
+0743  D4                		sep 	r4 											; and exit.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											Shift the sprite ^RA by D (D is 8421 format)
+                        ;
+                        ;	Runs in R5 returns to R4. Breaks nothing.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0744                    SpriteShift:
+0744  EA                		sex 	ra
+0745  FA 0F             		ani 	$0F 										; only interested in four lsb
+0747  32 6D             		bz 		SSH_Exit 									; no move.
+0749  F6                		shr
+074A  33 63             		bdf 	SSH_Up
+074C  F6                		shr 	
+074D  33 57             		bdf 	SSH_Left
+074F  F6                		shr
+0750  33 5B             		bdf 	SSH_Right
+0752  F6                		shr
+0753  33 68             		bdf 	SSH_Down
+0755  30 6D             		br 		SSH_Exit
+
+0757                    SSH_Left:													; move left
+0757  F8 FF             		ldi 	-1
+0759  30 5D             		br 		SSH_AddHorizontal
+
+075B                    SSH_Right:													; move right
+075B  F8 01             		ldi 	1
+075D                    SSH_AddHorizontal:
+075D  F4                		add
+075E  FA 3F             		ani 	63 											; force into HV range 0-63
+0760  5A                		str 	ra
+0761  30 6D             		br 		SSH_Exit
+
+0763                    SSH_Up: 													; move up
+0763  1A                		inc 	ra
+0764  F8 FF             		ldi 	-1
+0766  30 6B             		br 		SSH_AddVertical
+
+0768                    SSH_Down:
+0768  1A                		inc 	ra  										; move down.
+0769  F8 01             		ldi 	1
+076B                    SSH_AddVertical
+076B  F4                		add
+076C  73                		stxd
+076D                    SSH_Exit:
+076D  D4                		sep 	r4
+
+
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Player Routines
+                        ;
+                        ;	Run in R5, Return to R4, Must preserve RA.
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+
+076E                    PlayerSprite_GetSprite:
+076E  4A                		lda 	ra 											; calculate P.x + P.y
+076F  EA                		sex 	ra
+0770  F4                		add
+0771  FA 04             		ani 	4 											; use this to determine open/closed
+0773  3A 79             		bnz 	PSGS_1
+0775  2A                		dec 	ra 											; fix RA and return closed
+0776  F8 48             		ldi 	<PacmanClosed
+0778  D4                		sep 	r4
+
+0779  1A                PSGS_1:	inc 	ra 				 							; point to direction.
+077A  1A                		inc 	ra
+077B  0A                		ldn 	ra 											; read actual movement.
+077C  2A                		dec 	ra 											; fix RA back
+077D  2A                		dec 	ra
+077E  2A                		dec 	ra
+
+077F  F6                		shr 												; dispatch dependent on actual movement
+0780  33 8E             		bdf 	PSGS_Up
+0782  F6                		shr
+0783  33 91             		bdf 	PSGS_Left
+0785  F6                		shr
+0786  33 8B             		bdf 	PSGS_Right
+0788  F6                		shr
+0789  33 94             		bdf 	PSGS_Down
+
+078B                    PSGS_Right: 												; right graphic
+078B  F8 58             		ldi 	<PacmanRight
+078D  D4                		sep 	r4
+
+078E                    PSGS_Up: 													; up graphic
+078E  F8 4C             		ldi	 	<PacmanUp
+0790  D4                		sep 	r4
+
+0791                    PSGS_Left: 													; left graphic
+0791  F8 54             		ldi	 	<PacmanLeft
+0793  D4                		sep 	r4
+
+0794                    PSGS_Down: 													; down graphic
+0794  F8 50             		ldi	 	<PacmanDown
+0796  D4                		sep 	r4
+
+0797                    PlayerSprite_GetMovement:
+0797  92                		ghi 	r2 											; Point RF to last keypad entry
+0798  BF                		phi 	rf
+0799  F8 4D             		ldi 	Keyboard
+079B  AF                		plo 	rf
+079C  0F                		ldn 	rf 	 										; read it
+079D  FA 0F             		ani		$0F 										; only the bottom four bits matter
+079F  D4                		sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;										Check for player collision with power pills or pellets
+                        ;
+                        ; 	Top Subroutine: Runs in R4 Returns to R3.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+07A0                    CheckPlayerEat:
+07A0  92                		ghi 	r2 											; point RE to the legal player movements for the player
+07A1  BE                		phi 	re
+07A2  F8 64             		ldi 	SpriteStorage+4 						
+07A4  AE                		plo 	re
+07A5  0E                		ldn 	re 											; read it, shift bit 7 (set at junction) into DF
+07A6  FE                		shl
+07A7  3B F4             		bnf 	CPE_Exit 									; if not at junction then exit.
+
+07A9  F8 6B             		ldi 	SpriteStorage+11 							; read the cell number which is set at junctions.
+07AB  AE                		plo 	re
+07AC  0E                		ldn 	re
+07AD  AE                		plo 	re 											; RE now points to the cell data
+07AE  0E                		ldn 	re 											; read it, save in RB.1 and examine bit 7.
+07AF  BB                		phi 	rb 											; shifting it into the DF.
+07B0  FE                		shl 		
+07B1  3B F4             		bnf 	CPE_Exit 									; if already eaten (DF == 0) then skip
+
+07B3  0E                		ldn 	re 											; clear bit 7 indicating eaten
+07B4  FA 7F             		ani 	$7F
+07B6  5E                		str 	re
+
+07B7  F8 44             		ldi 	EatCounter 									; decrement the 'eat' counter
+07B9  AE                		plo 	re 											; when this is zero the level is completed.
+07BA  0E                		ldn 	re
+07BB  FF 01             		smi 	1
+07BD  5E                		str 	re
+
+07BE  F8 05             		ldi 	5 											; short beep on R7
+07C0  57                		str 	r7
+
+07C1  9B                		ghi 	rb 											; restore the maze cell entry from RB.1
+07C2  FE                		shl 												; put powerpill flag (bit 6) in DF
+07C3  FE                		shl
+07C4  F8 01             		ldi 	1 											; add 1 tens (e.g. 10 points per pellet) 								
+07C6  3B D4             		bnf 	CPE_AddTensToScore
+
+07C8  F8 52             		ldi 	ChasingTimer 								; Eaten a power pill : point RD to the chasing counter
+07CA  AE                		plo 	re
+07CB  F8 80             		ldi 	FramesPerChasingTimer 						; and set the chasing timer to non-zero.
+07CD  5E                		str 	re
+07CE  2E                		dec 	re 											; point RE to the Score for next caught ghost counter
+
+07CF  F8 01             		ldi 	1 											; initialise this to 1 (representing 100 points)
+07D1  5E                		str 	re 											; doubled every time a ghost is caught (200,400,800 points)
+
+07D2  F8 05             		ldi 	5 											; add 5 tens (e.g. 50 points per powerpellet)
+
+07D4                    CPE_AddTensToScore:
+07D4  AD                		plo 	rd 											; save tens to RD.0
+07D5  F8 0C             		ldi 	>AddScore 									; make R5 point to AddScore routine
+07D7  B5                		phi 	r5
+07D8  F8 18             		ldi 	<AddScore
+07DA  A5                		plo 	r5
+07DB  8D                		glo 	rd 											; restore tens from RD.0
+07DC  D5                		sep 	r5 											; add to score
+
+07DD  F8 6C             		ldi 	SpriteStorage+12							; point RE to player sprite old position, same position as the pill - set up on junctions.
+07DF  AE                		plo 	re 				
+07E0  4E                		lda 	re 											; read X into RD.0 - this is where the pill/pellet is drawn.
+07E1  AD                		plo 	rd
+07E2  0E                		ldn 	re 											; read Y into RD.1
+07E3  BD                		phi 	rd
+
+07E4  F8 05             		ldi 	>SpritePlot 								; set R5 to sprite plotter
+07E6  B5                		phi 	r5
+07E7  F8 06             		ldi 	<SpritePlot
+07E9  A5                		plo 	r5
+
+07EA  9B                		ghi 	rb 											; get the cell data from RB.1
+07EB  FE                		shl 												; shift bit 6 into DF (bit 6 indicates power pill)
+07EC  FE                		shl
+07ED  F8 40             		ldi 	<Pellet 									; select graphic dependent on DF (e.g. bit 6)
+07EF  3B F3             		bnf 	CPE_IsPellet
+07F1  F8 44             		ldi 	<PowerPill
+07F3                    CPE_IsPellet:
+07F3  D5                		sep 	r5 											; erase the pill from the display.
+
+07F4                    CPE_Exit: 													; exit
+07F4  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											Dummy Vector Methods used for testing
+                        ;
+                        ; ***************************************************************************************************************************************
+
+07F5                    NoSMethod: 													; Dummy get-sprite-visual returns cherry
+07F5  F8 68             		ldi 	<Cherry
+07F7                    NoCMethod: 													; Dummy collision ignored
+07F7  D4                		sep 	r4
+07F8                    NoMMethod: 													; Dummy movement non-existent
+07F8  F8 00             		ldi 	0
+07FA  D4                		sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ; 														ROM BOUNDARY HERE
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+
+0C00                    		.org 	$C00 										; S2 ROM can be anywhere except $000-$3FF and $800-$9FF
+                        															; (it can be at $800-$9FF but then there'll be no RAM !!!!!)
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											Initialisation data for Game Objects
+                        ;
+                        ;	For each type : initial position (2 bytes), Sprite vector, MoveGet vector, Collision vector
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0C00                    PlayerInitialiseData:
+0C00  1D19              		db 		4*6+5,5*5
+0C02  076E0797 07F7     		dw 		PlayerSprite_GetSprite,PlayerSprite_GetMovement,NoCMethod
+
+0C08                    GhostInitialiseData:
+0C08  180F              		db 		4*6,3*5
+0C0A  0C6C0C85 0CFF     		dw 		Ghost_GetSprite,Ghost_GetMovement,Ghost_CollidePlayer
+
+0C10                    BonusInitialiseData:
+0C10  1B0A              		db 		4*6+3,2*5
+0C12  0C4407F8 0C54     		dw 		Bonus_GetSprite,NoMMethod,Bonus_CollidePlayer
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Add D x 10 to Score
+                        ;
+                        ;	Second Level : Runs in R5 return to R4. Breaks RE,RF
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0C18                    AddScore:
+0C18  AE                		plo 	re 											; save score to add to RE.0
+0C19  92                		ghi 	r2 											; set RF equal to Score+4
+0C1A  BF                		phi 	rf 											; not +5 , that is the LSD and is always zero.
+0C1B  F8 4A             		ldi 	Score+4
+0C1D  AF                		plo 	rf
+0C1E                    ASC_Loop:
+0C1E  8E                		glo 	re 											; add score to [RF]
+0C1F  EF                		sex 	rf
+0C20  F4                		add 	
+0C21  5F                		str 	rf
+0C22  FF 0A             		smi 	10 											; is it >= 10
+0C24  3B 2C             		bnf 	ASC_Exit
+0C26  73                		stxd 												; so deduct 10 and wrap round to previous
+0C27  F8 01             		ldi 	1 											; add 1 to the next one.
+0C29  AE                		plo 	re
+0C2A  30 1E             		br 		ASC_Loop  									; this will probably crash if you score > 999,990 which is unlikely.
+0C2C                    ASC_Exit:
+0C2C  D4                		sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											Add outstanding units of 100 points to the score
+                        ;
+                        ;	Runs in R4, returns to R3
+                        ;
+                        ;	(necessary because of the different depth issue of 1802 SEP routines)
+                        ; ***************************************************************************************************************************************
+
+0C2D                    FixupOutstanding:
+0C2D  92                		ghi 	r2 											; point R2 to the outstanding counter
+0C2E  BD                		phi 	rd
+0C2F  F8 55             		ldi 	Outstanding100Points
+0C31  AD                		plo 	rd
+0C32  0D                		ldn 	rd 											; read it
+0C33  32 43             		bz 		FXO_Exit 									; exit if zero
+0C35  FF 01             		smi 	1 											; decrement it.
+0C37  5D                		str 	rd
+
+0C38  F8 0C             		ldi 	>AddScore 									; set R5 to add score routine
+0C3A  B5                		phi 	r5
+0C3B  F8 18             		ldi 	<AddScore
+0C3D  A5                		plo 	r5
+0C3E  F8 0A             		ldi 	10 											; add ten tens.
+0C40  D5                		sep 	r5
+0C41  30 2D             		br 		FixupOutstanding 							; and keep going.
+0C43                    FXO_Exit:
+0C43  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;															Bonus Routines
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+
+0C44                    Bonus_GetSprite:
+0C44  92                		ghi 	r2 											; point RD to the bonus frame counter
+0C45  BD                		phi 	rd
+0C46  F8 53             		ldi 	BonusFrameCounter 							; read it
+0C48  AD                		plo 	rd
+0C49  0D                		ldn 	rd 											; display cherry if in range 192..255
+0C4A  FF C0             		smi 	BonusRate
+0C4C  3B 51             		bnf		BGS_Blank
+0C4E  F8 68             		ldi 	<Cherry
+0C50  D4                		sep 	r4
+0C51                    BGS_Blank: 													; otherwise display nothing.
+0C51  F8 00             		ldi 	0
+0C53  D4                		sep 	r4
+
+0C54                    Bonus_CollidePlayer:
+0C54  92                		ghi 	r2 											; point RD to the bonus frame counter
+0C55  BD                		phi 	rd
+0C56  F8 53             		ldi 	BonusFrameCounter 							; read it
+0C58  AD                		plo 	rd
+0C59  0D                		ldn 	rd 											; display cherry if in range 192..255
+0C5A  FF C0             		smi 	BonusRate
+0C5C  3B 6B             		bnf		BCS_Exit
+0C5E  F8 00             		ldi 	0 											; reset the bonus frame counter
+0C60  5D                		str 	rd
+0C61  F8 55             		ldi 	Outstanding100Points 						; add 5 to the outstanding points counter
+0C63  AD                		plo 	rd
+0C64  0D                		ldn 	rd
+0C65  FC 05             		adi 	5
+0C67  5D                		str 	rd
+0C68  F8 14             		ldi 	20 											; longer beep
+0C6A  57                		str 	r7
+0C6B                    BCS_Exit:
+0C6B  D4                		sep 	r4
+
+
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Ghost Routines
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+
+0C6C                    Ghost_GetSprite: 						
+0C6C  4A                		lda 	ra 											; calculate X+Y
+0C6D  EA                		sex 	ra
+0C6E  F4                		add
+0C6F  2A                		dec 	ra
+0C70  FA 01             		ani 	1 											; look at bit 0
+0C72  32 77             		bz 		GGS_Alternate 								; if set display Ghost1
+0C74  F8 5C             		ldi 	<Ghost1
+0C76  D4                		sep 	r4
+0C77                    GGS_Alternate: 												; display Ghost2 or GhostReverse
+0C77  92                		ghi 	r2
+0C78  BD                		phi 	rd 											; point RD to chasing timer
+0C79  F8 52             		ldi 	ChasingTimer
+0C7B  AD                		plo 	rd
+0C7C  0D                		ldn 	rd 											; read it
+0C7D  3A 82             		bnz		GGS_Chasing 								; if non-zero display GhostReverse
+0C7F  F8 60             		ldi 	<Ghost2
+0C81  D4                		sep 	r4
+0C82                    GGS_Chasing:
+0C82  F8 64             		ldi 	<GhostReverse
+0C84  D4                		sep 	r4
+
+                        ; =========================================================================================================================================
+
+0C85                    Ghost_GetMovement:
+0C85  F8 52             		ldi 	ChasingTimer 								; point RD to chasing timer and read it
+0C87  AD                		plo 	rd
+0C88  9A                		ghi 	ra
+0C89  BD                		phi 	rd
+0C8A  0D                		ldn 	rd
+0C8B  BB                		phi 	rb 											; save in RB.1
+
+0C8C  8A                		glo 	ra 											; point RD to legal moves RA+4
+0C8D  FC 04             		adi 	4
+0C8F  AD                		plo 	rd
+0C90  0D                		ldn 	rd 											; read it, put junction bit (7) into DF
+0C91  FE                		shl
+0C92  3B FC             		bnf 	GGM_Exit 									; only move at junctions
+
+0C94  8A                		glo 	ra 											; read RA[11] which is the cell number
+0C95  FC 0B             		adi 	11
+0C97  AD                		plo 	rd
+0C98  0D                		ldn 	rd 		
+0C99  FA FE             		ani 	$FE 										; check 34 or 35 (drop bit 0)
+0C9B  FB 22             		xri 	34
+0C9D  3A AA             		bnz 	GGM_NotInPen
+
+0C9F  9B                		ghi 	rb 											; read chasing timer saved in RB.1
+0CA0  32 AA             		bz 		GGM_NotInPen 								; if timer = 0 then can escape the pen.
+
+0CA2  8A                		glo 	ra 											; set RA[3] (last move) to zero.
+0CA3  FC 03             		adi 	3
+0CA5  AD                		plo 	rd
+0CA6  F8 00             		ldi 	0
+0CA8  5D                		str  	rd
+0CA9  D4                		sep 	r4 											; and also return zero - not moving.
+
+0CAA                    GGM_NotInPen:
+0CAA  F8 04             		ldi 	>Random 									; point RC to random
+0CAC  BC                		phi 	rc
+0CAD  F8 E3             		ldi 	<Random
+0CAF  AC                		plo 	rc
+
+0CB0  DC                		sep 	rc 											; one time in 3 move randomly.
+0CB1  FA 03             		ani 	3
+0CB3  32 EE             		bz 		GGM_RandomMove
+
+0CB5  DC                		sep 	rc 											; generate a random number
+0CB6  FE                		shl 												; put MSB into DF
+0CB7  33 CF             		bdf 	GGM_Horizontal
+
+                        															; vertical move
+0CB9  F8 61             		ldi 	SpriteStorage+1 							; read Player 1.Y
+0CBB  AD                		plo 	rd
+0CBC  0D                		ldn 	rd															
+0CBD  1A                		inc 	ra 											; subtract Ghost.Y
+0CBE  EA                		sex 	ra
+0CBF  F7                		sm
+0CC0  2A                		dec 	ra
+0CC1  32 EE             		bz 		GGM_Same
+0CC3  F8 01             		ldi 	1
+0CC5  3B C9             		bnf 	GGM_Vertical1
+0CC7  F8 09             		ldi 	9
+0CC9                    GGM_Vertical1:
+0CC9  AD                		plo 	rd
+0CCA  F8 08             		ldi 	9^1
+0CCC  BD                		phi 	rd
+0CCD  30 E1             		br 		GGM_CheckInvert
+
+0CCF                    GGM_Horizontal:												; horizontal move
+0CCF  F8 60             		ldi 	SpriteStorage 								; read Player1.X
+0CD1  AD                		plo 	rd
+0CD2  0D                		ldn 	rd
+0CD3  EA                		sex 	ra 											; subtract Ghost.X
+0CD4  F7                		sm 															
+0CD5  32 EE             		bz 		GGM_Same
+0CD7  F8 02             		ldi 	2
+0CD9  3B DD             		bnf 	GGM_Horizontal1
+0CDB  F8 04             		ldi 	4
+0CDD                    GGM_Horizontal1:
+0CDD  AD                		plo 	rd
+0CDE  F8 06             		ldi		2^4
+0CE0  BD                		phi 	rd
+
+0CE1                    GGM_CheckInvert: 											; RD.0 is movement, xor with RD.1 if being chased.
+0CE1  9B                		ghi 	rb 											; check chasing timer.
+0CE2  32 EC             		bz 		GGM_NotChasing
+
+0CE4  22                		dec 	r2 											; return RD.0 ^ RD.1
+0CE5  9D                		ghi 	rd
+0CE6  52                		str 	r2
+0CE7  E2                		sex 	r2
+0CE8  8D                		glo 	rd
+0CE9  F3                		xor
+0CEA  12                		inc 	r2
+0CEB  D4                		sep 	r4
+
+0CEC                    GGM_NotChasing:												; not chasing, return RD.
+0CEC  8D                		glo 	rd
+0CED  D4                		sep 	r4
+
+0CEE                    GGM_Same: 													; same, move randomly.
+
+0CEE                    GGM_RandomMove:												; make a completely random move.
+0CEE  DC                		sep 	rc 											; call random number generator
+0CEF  FA 03             		ani 	3 											; 0,1,2,3
+0CF1  FB 02             		xri 	2 											; 2,3,0,1
+0CF3  3A F7             		bnz 	GGM1
+0CF5  FB 05             		xri 	7^2											; 2,3,5,1
+0CF7  FB 02             GGM1:	xri 	2 											; 0,1,7,3
+0CF9  FC 01             		adi 	1 											; 1,2,8,4
+0CFB  D4                		sep 	r4
+
+0CFC                    GGM_Exit: 													; return continuation.
+0CFC  F8 00             		ldi 	0
+0CFE  D4                		sep 	r4
+
+0CFF                    Ghost_CollidePlayer:
+0CFF  92                		ghi 	r2 											; point RD to chasing timer.
+0D00  BD                		phi 	rd
+0D01  F8 52             		ldi 	ChasingTimer
+0D03  AD                		plo 	rd
+0D04  0D                		ldn 	rd 											; read it
+0D05  3A 0C             		bnz 	GCP_EatenGhost 								; if non-zero ghost is eaten
+
+0D07  F8 50             		ldi 	LostLife 									; set the 'lost life' flag to non zero
+0D09  AD                		plo 	rd
+0D0A  5D                		str 	rd
+0D0B  D4                		sep 	r4
+
+0D0C                    GCP_EatenGhost:
+0D0C  F8 18             		ldi 	4*6 										; move ghost to cell (4,3) in the 'home'
+0D0E  5A                		str 	ra
+0D0F  1A                		inc 	ra
+0D10  F8 0F             		ldi 	3*5
+0D12  5A                		str 	ra
+0D13  2A                		dec 	ra
+
+0D14  92                		ghi 	r2 											; point RD to ghost caught counter
+0D15  BD                		phi 	rd 											; point RE to 100 points to add.
+0D16  BE                		phi 	re
+0D17  F8 51             		ldi 	GhostCaughtCounter 							
+0D19  AD                		plo 	rd
+0D1A  F8 55             		ldi 	Outstanding100Points
+0D1C  AE                		plo 	re
+0D1D  ED                		sex 	rd
+0D1E  0E                		ldn 	re 											; get add value
+0D1F  F4                		add 												; add ghost caught counter to it
+0D20  5E                		str 	re
+0D21  0D                		ldn 	rd 											; read gcc
+0D22  FE                		shl 												; double it
+0D23  5D                		str 	rd
+0D24  D4                		sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														M A I N    P R O G R A M
+                        ;
+                        ; ***************************************************************************************************************************************
+
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ; 														Set everything up
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+
+0D25                    StartGame:
+0D25  F8 FF             		ldi 	$0FF 										; initialise the Stack to $2FF
+0D27  A2                		plo		r2 											; from $2CF.
+0D28  F8 08             		ldi 	RAMPage
+0D2A  B2                		phi 	r2
+0D2B  B7                		phi 	r7
+0D2C  BF                		phi 	rf 											; set lives to 3, level to 1, galois LFSR to non-zero
+                        				 											; R7 points to the sound counter throughout the game.
+0D2D  F8 CD             		ldi 	Studio2BeepTimer							; Studio 2 Beep Counter
+0D2F  A7                		plo 	r7
+
+0D30  F8 42             		ldi 	RandomSeed
+0D32  AF                		plo 	rf
+0D33  EF                		sex 	rf
+0D34  F8 33             		ldi 	$33											; set the GLFSR to non-zero, won't work if seed == 0
+0D36  73                		stxd
+0D37  F8 00             		ldi 	0											; set the current level to 0 (made 1 by new level)
+0D39  73                		stxd 												
+0D3A  F8 03             		ldi 	3 											; set the current lives to 3
+0D3C  73                		stxd
+
+0D3D                    NextLevel: 													; start the next level
+0D3D  92                		ghi 	r2 											; point RD to the current level.
+0D3E  BD                		phi 	rd
+0D3F  F8 41             		ldi 	Level
+0D41  AD                		plo 	rd
+0D42  0D                		ldn 	rd
+0D43  FC 01             		adi 	1 											; increment the current level value.
+0D45  5D                		str 	rd
+
+0D46                    SameLevel:													; restart the same level
+0D46  F8 05             		ldi 	>InitialiseLevel 							; Initialise the level.
+0D48  B4                		phi 	r4
+0D49  F8 4F             		ldi 	<InitialiseLevel
+0D4B  A4                		plo 	r4
+0D4C  D4                		sep 	r4
+
+0D4D                    WaitKey0: 													; wait for key 0 to be pressed.
+0D4D  F8 04             		ldi 	>ScanKeypad 								; read the keyboard
+0D4F  B4                		phi 	r4
+0D50  F8 C4             		ldi 	<ScanKeypad
+0D52  A4                		plo 	r4
+0D53  D4                		sep 	r4
+0D54  FE                		shl
+0D55  3B 4D             		bnf 	WaitKey0
+
+0D57                    RestartSprites:
+0D57  92                		ghi 	r2 											; reset the sprite pointer to the start.
+0D58  BA                		phi 	ra
+0D59  F8 60             		ldi 	<SpriteStorage
+0D5B  AA                		plo 	ra
+
+0D5C                    InnerLoop:
+0D5C  F8 06             		ldi 	>MoveSprite 								; move sprite pointed to by RA
+0D5E  B4                		phi 	r4
+0D5F  F8 7F             		ldi 	<MoveSprite
+0D61  A4                		plo 	r4
+0D62  D4                		sep 	r4
+
+0D63  8A                		glo 	ra 											; go to next sprite
+0D64  FC 10             		adi 	SpriteRecordSize
+0D66  AA                		plo 	ra
+0D67  FB C0             		xri 	SpriteStorageEnd 							; loop back if not reached the end.
+0D69  3A 5C             		bnz 	InnerLoop
+
+0D6B  F8 07             		ldi 	>CheckPlayerEat 							; check what the player has eaten if anything.
+0D6D  B4                		phi 	r4
+0D6E  F8 A0             		ldi 	<CheckPlayerEat
+0D70  A4                		plo 	r4
+0D71  D4                		sep 	r4
+
+0D72  F8 0C             		ldi 	>FixupOutstanding 							; fix up outstanding points scored.
+0D74  B4                		phi 	r4
+0D75  F8 2D             		ldi 	<FixupOutstanding
+0D77  A4                		plo 	r4
+0D78  D4                		sep 	r4
+
+
+0D79  F8 41             		ldi 	Level 										; read level
+0D7B  AA                		plo 	ra
+0D7C  0A                		ldn 	ra
+0D7D  FE                		shl  												; level x 2
+0D7E  FD 0E             		sdi 	14 											; subtract from 14
+0D80  32 90             		bz 		NoDelay
+0D82  3B 90             		bnf 	NoDelay
+
+0D84  AE                		plo 	re 											; use it to run the delay loop.
+0D85  F8 40             Slow2:	ldi 	64
+0D87  AF                		plo 	rf
+0D88  2F                Slow:	dec 	rf
+0D89  8F                		glo 	rf
+0D8A  3A 88             		bnz 	Slow
+0D8C  2E                		dec 	re
+0D8D  8E                		glo 	re
+0D8E  3A 85             		bnz 	Slow2
+0D90                    NoDelay:
+
+0D90  F8 4D             		ldi 	<Keyboard									; set RA to point to the keyboard state.
+0D92  AA                		plo 	ra
+
+0D93  F8 04             		ldi 	>ScanKeypad 								; read the keyboard
+0D95  B4                		phi 	r4
+0D96  F8 C4             		ldi 	<ScanKeypad
+0D98  A4                		plo 	r4
+0D99  D4                		sep 	r4
+0D9A  5A                		str 	ra 											; save it in the keypad status variable
+
+0D9B  2A                		dec 	ra 											; bump the frame counter (one before the keyboard state)
+0D9C  0A                		ldn 	ra
+0D9D  FC 01             		adi 	1
+0D9F  5A                		str 	ra
+
+0DA0  F8 52             		ldi 	ChasingTimer 								; decrement chasing timer if > 0
+0DA2  AA                		plo 	ra
+0DA3  0A                		ldn 	ra
+0DA4  32 B0             		bz 		ChasingZero
+0DA6  FF 01             		smi 	1
+0DA8  5A                		str 	ra
+
+0DA9  FA 08             		ani 	8 											; check alternate frames
+0DAB  32 B0             		bz 		ChasingZero
+0DAD  F8 0B             		ldi 	11 											; play beeper alternate frames.
+0DAF  57                		str 	r7
+
+0DB0                    ChasingZero:
+0DB0  F8 53             		ldi 	BonusFrameCounter 							; point RA to Bonus Frame Counter
+0DB2  AA                		plo 	ra
+
+0DB3  0A                		ldn 	ra 											; and increment it.
+0DB4  FC 01             		adi 	1
+0DB6  5A                		str 	ra
+
+0DB7  F8 44             		ldi 	EatCounter 									; if eaten everything, go to next level.
+0DB9  AA                		plo 	ra
+0DBA  0A                		ldn 	ra
+0DBB  32 3D             		bz 		NextLevel
+
+0DBD  F8 50             		ldi 	LostLife 									; read the 'lost life' flag.
+0DBF  AA                		plo 	ra
+0DC0  0A                		ldn 	ra
+0DC1  32 57             		bz		RestartSprites 								; and go round again if not dead.
+
+0DC3  F8 3C             		ldi 	60 											; long beep.
+0DC5  57                		str 	r7
+
+0DC6  F8 40             		ldi 	Lives 										; point RA to lives
+0DC8  AA                		plo 	ra
+0DC9  0A                		ldn 	ra 											; decrement lives
+0DCA  FF 01             		smi 	1
+0DCC  5A                		str 	ra
+0DCD  3A 46             		bnz 	SameLevel 									; if lives left, then restart.
+
+0DCF  F8 46             		ldi 	Score 										; point RA to score
+0DD1  AA                		plo 	ra
+
+0DD2  F8 01             		ldi 	1 											; set score digit index to 1
+0DD4  AE                		plo 	re
+
+0DD5                    ScoreWriteLoop:
+0DD5  8E                		glo 	re 											; convert 3 LSBs of RE to screen address in RD
+0DD6  FA 07             		ani 	7
+0DD8  AD                		plo 	rd
+0DD9  F8 09             		ldi 	VideoPage 									; put in video page
+0DDB  BD                		phi 	rd
+
+0DDC  4A                		lda 	ra 											; read next score digit
+0DDD  FC 10             		adi 	$10 										; score table offset in BIOS
+0DDF  AF                		plo 	rf
+0DE0  F8 02             		ldi 	$02 										; read from $210+n
+0DE2  BF                		phi 	rf
+0DE3  0F                		ldn 	rf 											; into D, the new offset
+0DE4  AF                		plo 	rf 											; put into R4, R4 now contains 5 rows graphic data
+
+0DE5  F8 05             		ldi 	5 											; set R5.0 to 6
+0DE7  AC                		plo 	rc
+0DE8                    OutputChar:
+0DE8  4F                		lda 	rf 											; read character and advance
+0DE9  F6                		shr 												; centre in byte
+0DEA  F6                		shr
+0DEB  5D                		str 	rd
+0DEC  8D                		glo 	rd
+0DED  FC 08             		adi 	8
+0DEF  AD                		plo 	rd
+0DF0  2C                		dec 	rc 											; decrement counter
+0DF1  8C                		glo 	rc
+0DF2  3A E8             		bnz 	OutputChar 									; loop back if nonzero
+0DF4  5D                		str 	rd
+0DF5  1E                		inc 	re 											; increment score index counter
+0DF6  8E                		glo 	re
+0DF7  FB 07             		xri 	7 											; reached seven, end of score write.
+0DF9  3A D5             		bnz 	ScoreWriteLoop
+
+0DFB  30 FB             Dead:	br 		Dead
+
+00FF                    		.org 	$FF
+00FF  00                		.db 	0
+
+00000 Total Error(s)
+
+ADDSCORE           0C18    ASC_EXIT           0C2C    ASC_LOOP           0C1E
+BCS_EXIT           0C6B    BGS_BLANK          0C51    BLANK              046C
+BONUSFRAMECOUNTER  0053 E  BONUSINITIALISEDATA                           0C10
+BONUSRATE          00C0 E  BONUS_COLLIDEPLAYER                           0C54
+BONUS_GETSPRITE    0C44    CHASINGTIMER       0052 E  CHASINGZERO        0DB0
+CHECKPLAYEREAT     07A0    CHERRY             0468    CPE_ADDTENSTOSCORE 07D4
+CPE_EXIT           07F4    CPE_ISPELLET       07F3    DEAD               0DFB
+DEATH              0054 E  EATCOUNTER         0044 E  FIXUPOUTSTANDING   0C2D
+FRAME              004C E  FRAMESPERCHASINGTIMER                         0080 E
+FXO_EXIT           0C43    GCP_EATENGHOST     0D0C    GGM1               0CF7
+GGM_CHECKINVERT    0CE1    GGM_EXIT           0CFC    GGM_HORIZONTAL     0CCF
+GGM_HORIZONTAL1    0CDD    GGM_NOTCHASING     0CEC    GGM_NOTINPEN       0CAA
+GGM_RANDOMMOVE     0CEE    GGM_SAME           0CEE    GGM_VERTICAL1      0CC9
+GGS_ALTERNATE      0C77    GGS_CHASING        0C82    GHOST1             045C
+GHOST2             0460    GHOSTCAUGHTCOUNTER 0051 E  
+GHOSTINITIALISEDATA                           0C08    GHOSTREVERSE       0464
+GHOST_COLLIDEPLAYER                           0CFF    GHOST_GETMOVEMENT  0C85
+GHOST_GETSPRITE    0C6C    GRAPHICS           0440    IL_BOTTOMROW       05BF
+IL_CLEARSCREEN     056A    IL_CLEARSPRITESTORAGE                         063F
+IL_COPYMAZEDATA    055C    IL_DRAWCELL        0573    
+IL_DRAWCELLRESETMASK                          0570    IL_DRAWLEFTWALL    057B
+IL_DRAWLIFEMARKERS 05EA    IL_DRAWPILLS       0619    IL_ISPELLET        0624
+IL_MASKZERO        0592    IL_NOLEFTWALL      058B    IL_NOLIVES         05FE
+IL_NOPILL          0625    IL_NOSETRIGHT      05DB    IL_NOTNEXT         05A3
+IL_RIGHTSIDE       05CF    IL_UPPERWALL       0597    INITIALISELEVEL    054F
+INITIALISEOBJECT   065E    INNERLOOP          0D5C    IOB_COPY           066D
+KEYBOARD           004D E  LEVEL              0041 E  LEVELDATA          0402
+LEVELDATAEND       043E    LIVES              0040 E  LOSTLIFE           0050 E
+MAZEDATA           0000 E  MOVESPRITE         067F    MSP_MOVEOKAY       06A6
+MSP_NOSIGN1        06C4    MSP_NOSIGN2        06CE    MSP_NOTFIRST       06E0
+NEXTLEVEL          0D3D    NOCMETHOD          07F7    NODELAY            0D90
+NOMMETHOD          07F8    NOSMETHOD          07F5    OUTPUTCHAR         0DE8
+OUTSTANDING100POINTS                          0055 E  PACMANCLOSED       0448
+PACMANDOWN         0450    PACMANLEFT         0454    PACMANRIGHT        0458
+PACMANUP           044C    PELLET             0440    
+PLAYERINITIALISEDATA                          0C00    
+PLAYERSPRITE_GETMOVEMENT                      0797    
+PLAYERSPRITE_GETSPRITE                        076E    POWERPILL          0444
+PSGS_1             0779    PSGS_DOWN          0794    PSGS_LEFT          0791
+PSGS_RIGHT         078B    PSGS_UP            078E    R0                 0000 E
+R1                 0001 E  R2                 0002 E  R3                 0003 E
+R4                 0004 E  R5                 0005 E  R6                 0006 E
+R7                 0007 E  R8                 0008 E  R9                 0009 E
+RA                 000A E  RAMPAGE            0008 E  RANDOM             04E3
+RANDOMSEED         0042 E  RB                 000B E  RC                 000C E
+RD                 000D E  RE                 000E E  RESTARTSPRITES     0D57
+RF                 000F E  RN_NOXOR           04F6    SAMELEVEL          0D46
+SCANKEYPAD         04C4    SCORE              0046 E  SCOREWRITELOOP     0DD5
+SHIFTXORDRAWERBASE 0474    SKBLOOP            04CB    SKBSKIP            04D9
+SLOW               0D88    SLOW2              0D85    SPRITECOUNT        0006 E
+SPRITELOADANDPLOT  04FF    SPRITEPLOT         0506    SPRITERECORDSIZE   0010 E
+SPRITESHIFT        0744    SPRITESTORAGE      0060 E  SPRITESTORAGEEND   00C0 E
+SPRP_EXIT          054A    SPRP_LOOP          0532    SPRP_NOPLOT        054C
+SSH_ADDHORIZONTAL  075D    SSH_ADDVERTICAL    076B    SSH_DOWN           0768
+SSH_EXIT           076D    SSH_LEFT           0757    SSH_RIGHT          075B
+SSH_UP             0763    STARTCODE          0400    STARTGAME          0D25
+STUDIO2BEEPTIMER   00CD E  SXD0               049B    SXD1               049A
+SXD2               0499    SXD3               0498    SXD4               049F
+SXD4_2             04B5    SXD5               04A8    SXD5_2             04AF
+SXD6               048A    SXD7               0482    SXDXORWORD         04BB
+ULM_DIVIDE         071C    ULM_DIVIDEEND      0723    ULM_EXIT           073D
+ULM_MOVEVERTICAL   070A    UPDATELEGALMOVES   06F8    VIDEOPAGE          0009 E
+WAITKEY0           0D4D

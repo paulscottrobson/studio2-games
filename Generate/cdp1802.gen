@@ -1,0 +1,172 @@
+//	*******************************************************************************************************************
+//	*******************************************************************************************************************
+//
+//										RCA1802 'C' Code Generator Source
+//
+//									   Written by Paul Robson 8th Feb 2013
+//
+//	*******************************************************************************************************************
+//	*******************************************************************************************************************
+//
+//
+//	Types: 				BYTE8	(unsigned 8 bit integer)
+//						WORD16	(unsigned 16 bit integer)
+//
+//	1802 Registers :	BYTE8 	D,DF,P,X,IE,T,Q
+//						WORD16	R[16]
+//						WORD16 	Cycles - Cycles counter counting down - 2 done per instruction anyway.
+//
+//	Others:				WORD16 	_temp
+//
+//	Documents based on the CDP1802.PDF Document. Note that D and R[] rely on their bit sizes to truncate
+//	Inc/Dec do not mask with $FFFF, nor do some ALU ops mask D with $FF
+//
+//	{} substitutions
+//	================
+//
+//		{C}				Text equivalent of opcode & n (e.g. Error, Q, Z, DF, 1,2,3,4,Error, NQ,NZ,NF,N1,N2,N3,N4)
+//						(n = %1111 for $3x, %1011 for $Cx. $Cx also inverts bit 3 if bit 2 is set (e.g. Long Skip))
+//		{H} 			Opcode & 15 as a hexadecimal constant
+//		{R} 			Opcode & 15 as an integer constant
+//		{P}				Opcode & 7 as a port number
+//		{T} 			Code version of {C} - expression returning the test value (Q => (Q != 0) for example)
+//
+//	Macros
+//	======
+//
+//		READ(a) 		Read byte at address a
+//		WRITE(a,d) 		Write byte d at address a
+//		FETCH2() 		Fetch one byte from R[P], returns value
+//		FETCH3() 		Fetch two bytes from R[P] (High,Low order), into _temp
+//		INPUTIO(p) 		Input from port (p is 1-7)
+//		UPDATEIO(p,d)	Output updated - p is port # (1-7,Q = 0),d = value)
+//
+//	*******************************************************************************************************************
+//												Page 3-23 : Memory Reference
+//	*******************************************************************************************************************
+
+01-0F 	"ldn R{H}"		D = READ(R[{R}]) 															// LDN Rn 	Load via R(n)
+40-4F	"lda R{H}"		D = READ(R[{R}]);R[{R}]++ 													// LDA Rn 	Load via R(n), inc R(n)
+F0 		"ldx"			D = READ(R[X])																// LDX  	Load via R(X)
+72 		"ldxa" 			D = READ(R[X]);R[X]++ 														// LDXA 	Load via R(X), inc R(X)
+F8 		"ldi .1" 		D = FETCH2() 																// LDI nn 	Load immediate
+50-5F 	"str R{H}" 		WRITE(R[{R}],D) 															// STR Rn 	Store via R(n)
+73		"stxd"			WRITE(R[X],D);R[X]-- 														// STXD 	Store via R(X), dec R(X)
+
+//	*******************************************************************************************************************
+//												Page 3-23 : Register Operations
+//	*******************************************************************************************************************
+
+10-1F 	"inc R{H}" 		R[{R}]++ 																	// INC Rn 	Increment R(n)
+20-2F 	"dec R{H}" 		R[{R}]-- 																	// DEC Rn 	Decrement R(n)
+60 		"irx"			R[X]++ 																		// IRX 		Increment R(X)
+80-8F 	"glo R{H}"		D = R[{R}] & 0xFF 															// GLO Rn 	Get low R(n)
+A0-AF 	"plo R{H}"		R[{R}] = (R[{R}] & 0xFF00) | D 												// PLO Rn 	Put low R(n)
+90-9F 	"ghi R{H}"		D = (R[{R}] >> 8) & 0xFF 													// GHI Rn 	Get high R(n)
+B0-BF 	"phi R{H}"		R[{R}] = (R[{R}] & 0x00FF) | (((WORD16)D) << 8)								// PHI Rn   Put high R(n)
+
+//	*******************************************************************************************************************
+//												Page 3-23 : Logic Operations
+//	*******************************************************************************************************************
+
+F1		"or"			D = D | READ(R[X])															// OR 		Logical Or M(R(X)) into D
+F9 		"ori .1"		D = D | FETCH2()															// ORI 		Logical Or immediate 
+F3		"xor"			D = D ^ READ(R[X])															// XOR 		Logical Xor M(R(X)) into D
+FB 		"xri .1"		D = D ^ FETCH2()															// XRI 		Logical Xor immediate 
+F2		"and"			D = D & READ(R[X])															// AND		Logical And M(R(X)) into D
+FA 		"ani .1"		D = D & FETCH2()															// ANI 		Logical And immediate 
+
+F6 		"shr"			DF = D & 1;D = (D >> 1) & 0x7F 												// SHR 		Shift D Right
+76		"rshr"			_temp = D & 1;D = ((D >> 1) & 0x7F) | (DF << 7);DF = _temp					// RSHR		Ring Shift D Right
+FE 		"shl"			DF = (D >> 7); D = D << 1 													// SHL 		Shift D Left
+7E 		"rshl"			_temp = D;D = (D << 1) | DF;DF = (_temp >> 7) & 1							// RSHL 	Ring Shift D Left
+
+//	*******************************************************************************************************************
+// 										Page 3-23,3-24 : Arithmetic Operations
+//	*******************************************************************************************************************
+
+:#define ADD(n1,n2,n3)	_temp = (n1)+(n2)+(n3);DF = _temp >> 8;D = _temp 							// Add Macro
+:#define SUB(n1,n2,n3)	_temp = (n1)+((n2) ^ 0xFF)+(n3);DF = _temp >> 8;D = _temp 					// Subtract Macro (see RCA1802UM p30)
+
+F4 		"add" 			ADD(D,READ(R[X]),0)															// ADD 		Add M(R(X))
+FC 		"adi .1"		ADD(D,FETCH2(),0)															// ADI 		Add Immediate
+74 		"adc" 			ADD(D,READ(R[X]),DF)														// ADC 		Add M(R(X)) with carry
+7C 		"adci .1"		ADD(D,FETCH2(),DF)															// ADCI 	Add Immediate with carry
+F5 		"sd" 			SUB(READ(R[X]),D,1)															// SD 		Sub M(R(X)) from D
+FD 		"sdi .1"		SUB(FETCH2(),D,1)															// SDI 		Sub Immediate from D
+75 		"sdb" 			SUB(READ(R[X]),D,DF)														// SDB 		Sub M(R(X)) from D with Borrow
+7D 		"sdbi .1"		SUB(FETCH2(),D,DF)															// SDBI		Sub Immediate from D with Borrow
+F7 		"sm"			SUB(D,READ(R[X]),1)															// SM 		Sub D from M(R(X))
+FF 		"smi .1"		SUB(D,FETCH2(),1)															// SMI 		Sub from D Immediate
+77 		"smb"			SUB(D,READ(R[X]),DF)														// SMB 		Sub D from M(R(X)) with Borrow
+7F 		"smbi .1"		SUB(D,FETCH2(),DF)															// SMBI 	Sub from D Immediate witn Borrow
+
+//	*******************************************************************************************************************
+//										Page 3-24 : Short Branch Instructions
+//	*******************************************************************************************************************
+
+:#define SHORT(b) 		R[P] = (R[P] & 0xFF00) | (b) 												// Short Branch Macro
+
+30 		"br .1"			_temp = FETCH2();SHORT(_temp) 												// BR 		Short Branch
+38		"skp"			_temp = FETCH2()															// SKP 		Skip (No Short Branch)
+31-37 	"b{C} .1"		_temp = FETCH2(); if ({T}) SHORT(_temp)										// Bx 		Conditional short branch
+39-3F 	"b{C} .1"		_temp = FETCH2(); if (!({T})) SHORT(_temp) 									// Bx  		Inverse conditional short branch
+
+//	*******************************************************************************************************************
+//									    Page 3-24,3-25 : Long Branch Instructions
+//	*******************************************************************************************************************
+
+:#define LONG(a) 		R[P] = (a) 																	// Long Branch Macro
+
+C0 		"lbr .2"			Cycles--;FETCH3();LONG(_temp)											// LBR 		Long Branch
+C8 		"lskp"				Cycles--;FETCH3()														// LSKP		Long Skip (No long branch)
+C1-C3 	"lb{C} .2"			Cycles--;FETCH3();if ({T}) LONG(_temp)									// LBx 		Conditional Long Branch
+C9-CB 	"lb{C} .2"			Cycles--;FETCH3();if (!({T})) LONG(_temp)								// LBx 		Inverse Conditional Long Branch
+
+//	*******************************************************************************************************************
+//									    Page 3-25 : Long Skip Instructions
+//	*******************************************************************************************************************
+
+//	inversions handled for $Cx by {T} and {C} also loss of bit 2.
+
+:#define LONGSKIP() 		R[P] += 2 																// Long Skip Macro
+
+C5-C7 	"ls{C}" 			Cycles--;if (!{T}) LONGSKIP()											// LSx 		Inverse conditional long branch
+CD-CF 	"ls{C}"				Cycles--;if (({T})) LONGSKIP() 										// LSx 		Conditional long branch
+CC 		"lsie"				Cycles--;if (IE != 0) LONGSKIP() 										// LSIE 	Long skip if IE set.
+
+//	*******************************************************************************************************************
+//									    Page 3-25 : Control Instructions
+//	*******************************************************************************************************************
+
+00 		"idl"				R[P]--																	// IDL 		Idle stops processor executing
+C4 		"nop"				Cycles--																// NOP 		1802 NOP is 3 cycles
+D0-DF 	"sep R{H}"			P = {R}																	// SEP Rn 	Set P to n
+E0-EF 	"sex R{H}"			X = {R} 																// SEX Rn 	Set X to n
+7B 		"seq" 				Q = 1;UPDATEIO(0,1)														// SEQ 		Set Q, notify HW
+7A 		"req"				Q = 0;UPDATEIO(0,0)														// REQ 		Reset Q, notify HW
+78 		"sav" 				WRITE(R[X],T)															// SAV 		Write T to Memory(R(X))
+79 		"mark"				T = (X << 4) | P;WRITE(R[2],T);X = P;R[2]--								// MARK 	See RCA1802UM pp41. Push X,P
+
+:#define INTERRUPT()		if (IE != 0) { T = (X << 4) | P; P = 1; X = 2; IE = 0; }				// Call Interrupt Macro.
+:#define RETURN() 			_temp = READ(R[X]);R[X]++;X = _temp >> 4;P = _temp & 0x0F 				// Return from Interrupt Macro.
+
+70		"ret"				RETURN();IE = 1 														// RET 		Return and Enable 
+71 		"dis"				RETURN();IE = 0 														// DIS 		Return and Disable
+
+//	*******************************************************************************************************************
+//											Page 3-25 : I/O Transfer
+//	*******************************************************************************************************************
+
+61-67	"out {P}"			UPDATEIO({P},READ(R[X]));R[X]++ 										// OUT 		Output from M(R(X)) to port
+69-6F 	"inp {P}"			D = INPUTIO({P});WRITE(R[X],D) 											// INP 		Input from port to D and M(R(X))
+
+68 		"nop68"				Cycles-- 																// $68 is unused in a stock 1802, as NOP.
+
+//	*******************************************************************************************************************
+//												Revision History
+//	*******************************************************************************************************************
+//
+//	08-02-13 				First completed version.
+//
+

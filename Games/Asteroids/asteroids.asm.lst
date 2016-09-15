@@ -1,0 +1,1674 @@
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											ASTEROIDS - For the RCA Studio 2 (1802 Assembler)
+                        ;											=================================================
+                        ;
+                        ;	Author : 	Paul Robson (paul@robsons.org.uk)
+                        ;	Tools :		Assembles with asmx cross assembler http://xi6.com/projects/asmx/
+                        ;
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;       Reserved for Studio 2 BIOS : 	R0,R1,R2,R8,R9,RB.0
+                        ;
+                        ;		Other usage
+                        ;		===========
+                        ;		R2 		Used for Stack, therefore R2.1 always points to RAM Page.
+                        ;       R3      PC (lowest level)
+                        ;		R4 		PC (First level call)
+                        ; 		R5 		PC (Second Level Call)
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+
+      = 0008            RamPage	= 8													; 256 byte RAM page used for Data ($800 on S2)
+      = 0009            VideoPage = 9												; 256 byte RAM page used for Video ($900 on S2)
+
+      = 00CD            Studio2BeepTimer = $CD 										; Studio 2 Beep Counter
+      = 00CE            Studio2SyncTimer = $CE 										; Studio 2 Syncro timer.
+
+      = 00E0            RandomSeed = $E0 											; 16 bit RNG seed
+      = 00E2            Lives = $E2 												; Lives count
+      = 00E3            Level = $E3 												; Level number
+      = 00E4            PointsToAdd = $E4 											; Points to add to score
+      = 00E5            Score = $E5 												; Score (6 bytes LSD first)
+
+      = 0000            AsteroidBase = $00 											; Asteroid Start point
+      = 0010            AsteroidCount = 16 											; Number of asteroids
+      = 0008            AsteroidRecSize = 8 										; Size of each asteroid.
+      = 0080            AsteroidEnd = AsteroidBase + AsteroidRecSize * AsteroidCount
+
+      = 0080            MissileBase = AsteroidEnd 									; Missile Start Point
+      = 0004            MissileCount = 4 											; number of missiles
+      = 0004            MissileRecSize = 4 											; bytes per missile.
+      = 0090            MissileEnd = MissileBase+MissileCount * MissileRecSize
+
+      = 0090            XPlayer = MissileEnd+0 										; Player X position (follows Missiles for collision code.)
+      = 0091            YPlayer = MissileEnd+1 										; Player Y position
+      = 0092            Rotation = MissileEnd+2 									; Player Rotation (0-7)/Graphic
+      = 0093            IsVisible = MissileEnd+3 									; Set when player has been made visible at level start.
+      = 0094            VisiMask = MissileEnd+4 									; Checks whether asteroid in player area.
+      = 0095            SpeedCounter = MissileEnd+5 								; Speed counter
+      = 0096            LastFire = MissileEnd+6 									; Last status of fire button.
+
+      = 00A0            PlayerSpeed = 160 											; player speed is fixed.
+
+      = 0018            MissileLifeSpan = 24 										; number of missile moves before self-termination
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;	Asteroid
+                        ;	========
+                        ;		+0 			X Position (0-63) - bit 7 unused - bit 6 don't draw first time.
+                        ;		+1 			Y Position (0-31) - bit 7 set marks it for destruction.
+                        ;		+2 			Asteroid ID (0-2) - also width = (n+1)*4 and height = (n+1) * 2
+                        ;		+3 			Direction of movement (0-7)
+                        ;		+4 			Speed
+                        ;		+5 			Speed counter.
+                        ;		+6,7 		(Reserved)
+                        ;
+                        ;	Missiles
+                        ;	========
+                        ;
+                        ;		+0 			Missile X Position - bit 7 set if not in use - bit 6 first draw.
+                        ; 		+1 			Missile Y Position - bit 7 marks it for destruction.
+                        ; 		+2 			Direction of Movement (0-7)
+                        ;		+3 			Moves remaining till expires.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Studio 2 Boot Code
+                        ;	
+                        ; ***************************************************************************************************************************************
+
+0000                        	.include "1802.inc"
+      = 0000            r0      = 0
+      = 0001            r1      = 1
+      = 0002            r2      = 2
+      = 0003            r3      = 3
+      = 0004            r4      = 4
+      = 0005            r5      = 5
+      = 0006            r6      = 6
+      = 0007            r7      = 7
+      = 0008            r8      = 8
+      = 0009            r9      = 9
+      = 000A            ra      = 10
+      = 000B            rb      = 11
+      = 000C            rc      = 12
+      = 000D            rd      = 13
+      = 000E            re      = 14
+      = 000F            rf      = 15
+
+0400                        	.org    400h										; ROM code in S2 starts at $400.
+0400                    StartCode:
+0400  0610                  	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Asteroid Drawing Code
+                        ;
+                        ;	On entry : RA[0] is the horizontal position (0-63)
+                        ; 			   RA[1] is the vertical position (0-31)
+                        ; 			   RA[2] is the asteroid ID (0-2), also height/2.
+                        ;
+                        ;	Works by maintaining four pointers representing four quadrants and two masks (one for each side), these are
+                        ;   drawn a pixel at a time and moved in unison. Think of four linked pens drawing a circle, each doing one
+                        ; 	quarter of it.
+                        ;
+                        ;	Upper Right Pointer : RF 		Left Mask : RA.1
+                        ;	Lower Right Pointer : RE 		Right Mask : RA.0
+                        ;	Upper Left Pointer :  RD
+                        ;	Lower Left Pointer :  RC 		First-Plot Flag : RB.1
+                        ;
+                        ;	Breaks ALL REGISTERS - well I need it as fast as possible :) but RA is preserved on the stack.
+                        ;
+                        ;	Runs in R4, returns to R3.
+                        ;
+                        ;	Final testing showed : drawing 4 of each (e.g. 12 in total) 256 times in 10 seconds.
+                        ;						   3072 in 10 seconds, or about 300 per second.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0402                    DrawAsteroid:
+0402  E2                		sex 	r2 											; X = 2 throughout the pre draw code.
+
+0403  22                		dec 	r2 											; save RA on the stack.
+0404  8A                		glo 	ra
+0405  73                		stxd
+0406  9A                		ghi 	ra
+0407  73                		stxd 	 											; save and allocate byte on stack for work.
+
+0408  4A                		lda 	ra 											; read asteroid data in.
+0409  AC                		plo 	rc
+040A  4A                		lda 	ra
+040B  BC                		phi 	rc
+040C  4A                		lda 	ra
+040D  BB                		phi 	rb
+040E  52                		str 	r2 											; save in stack space
+040F  9C                		ghi 	rc 											; subtract 1/2 height from y to centre it.
+0410  F7                		sm
+0411  BC                		phi 	rc
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;											Calculate the screen position and bit mask
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0412  94                		ghi 	r4 											; Call the byte & mask calculation routine.
+0413  B5                		phi	 	r5
+0414  F8 F2             		ldi 	<CalculateScreenPosition
+0416  A5                		plo 	r5
+0417  D5                		sep 	r5
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;						Calculate the asteroid height and set the screen position for the bottom half
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0418  9B                		ghi	 	rb 											; get asteroid number from RB.1
+0419  FE                		shl 												; asteroid # x 16
+041A  FE                		shl
+041B  FE                		shl
+041C  FE                		shl
+041D  FC 08             		adi 	8 											; asteroid # x 16 + 8 is the difference between top and bottom.
+
+041F  52                		str 	r2 											; save it on space allocated for calculations above.
+0420  8D                		glo 	rd 											; get the upper offset
+0421  F4                		add 												; add the difference
+0422  AE                		plo 	re 											; put in RE.0 and RC.0 - the lower bytes of the lower quarters
+0423  AC                		plo 	rc
+
+0424  9B                		ghi 	rb 											; copy RB.1 (asteroid ID)
+0425  52                		str 	r2 											; store in allocated stack space.
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;						Set up R5-R7 to point to - Plot Pixel, Move Horizontally, Move Vertically
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0426  F8 04             		ldi 	>PlotPixel 									; R5 always points to the pixel plotter
+0428  B5                		phi 	r5
+0429  B6                		phi 	r6 											; R6 points to the move left (or right) modifier
+042A  B7                		phi 	r7 								
+042B  F8 61             		ldi 	<PlotPixel
+042D  A5                		plo 	r5
+042E  F8 7D             		ldi 	<MoveLeft
+0430  A6                		plo 	r6
+0431  F8 98             		ldi 	<MoveDown 									; R7 points to the move down modifier
+0433  A7                		plo 	r7
+
+0434  F8 FF             		ldi 	$FF 										; set 'first plot' flag in RB.0 - stops overwriting of first dot.
+0436  BB                		phi 	rb
+
+0437  F8 09             		ldi 	VideoPage									; Set High Bytes of quadrant pointers RF-RC to point to the Video Page.
+0439  BF                		phi 	rf
+043A  BE                		phi 	re
+043B  BD                		phi 	rd
+043C  BC                		phi 	rc
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;							Sequences of calls to 5,6,7 dependent on what you want to draw
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+043D  72                		ldxa 												; load the asteroid ID back in and fix up the stack
+043E  3A 45             		bnz 	DA_Not0 									; if non zero skip the drawing of asteroid 0.
+
+0440  D5                		sep 	r5 											; Asteroid 0.
+0441  D6                		sep 	r6
+0442  D5                		sep 	r5
+0443  30 59             		br 		DA_Exit
+
+0445  F6                DA_Not0:shr 												; bit 0 set
+0446  3B 50             		bnf 	DA_Asteroid2 								; if clear, it's asteroid #2
+
+0448  D5                		sep 	r5 											; Asteroid 2.
+0449  D6                		sep 	r6
+044A  D5                		sep 	r5
+044B  D6                		sep 	r6
+044C  D7                		sep 	r7
+044D  D5                		sep 	r5
+044E  30 59             		br 		DA_Exit
+
+0450                    DA_Asteroid2:
+0450  D5                		sep 	r5
+0451  D6                		sep 	r6
+0452  D5                		sep 	r5
+0453  D6                		sep 	r6
+0454  D7                		sep 	r7
+0455  D5                		sep 	r5
+0456  D6                		sep 	r6
+0457  D7                		sep 	r7
+0458  D5                		sep 	r5
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;															Restore RA and exit
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0459  E2                DA_Exit:sex 	r2 											; restore RA off the stack.
+045A  72                		ldxa
+045B  BA                		phi 	ra
+045C  72                		ldxa
+045D  AA                		plo 	ra
+045E  D3                		sep 	r3
+045F  30 02             		br 		DrawAsteroid 								; make it re-entrant
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;																	Plot Pixels
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0461                    PlotPixel:
+0461  EF                		sex 	rf 	 										; do upper right pixel (RF,RB.0)
+0462  8A                		glo		ra
+0463  F3                		xor
+0464  5F                		str 	rf
+
+0465  EE                		sex 	re 											; do lower right pixel (RE,RB.0)
+0466  8A                		glo 	ra
+0467  F3                		xor 	
+0468  5E                		str 	re
+
+0469  9B                		ghi 	rb  										; first doesn't plot left and right because they're the same
+046A  32 72             		bz		PP_LeftSide									; and cancel each other out so skip.
+046C  F8 00             		ldi 	0 											; clear first plot flag.
+046E  BB                		phi 	rb
+046F  D4                		sep 	r4 											; return
+0470  30 61             		br 		PlotPixel
+
+0472                    PP_LeftSide:
+0472  ED                		sex		rd 											; do upper left pixel (RD,RB.1)
+0473  9A                		ghi 	ra
+0474  F3                		xor
+0475  5D                		str 	rd
+
+0476  EC                		sex 	rc 											; do lower left pixel (RC,RB.1)
+0477  9A                		ghi 	ra
+0478  F3                		xor 	
+0479  5C                		str 	rc
+
+047A  D4                		sep 	r4 											; return
+047B  30 61             		br 		PlotPixel 								
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;															Horizontal Movement
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+047D                    MoveLeft:
+047D  9A                		ghi 	ra 											; get left mask
+047E  FE                		shl 												; shift left and write back.
+047F  BA                		phi 	ra
+0480  3B 89             		bnf 	ML_MoveLeftRightSide
+0482  7E                		shlc												; make it $01
+0483  BA                		phi 	ra
+0484  9D                		ghi 	rd
+0485  2D                		dec 	rd
+0486  2C                		dec 	rc
+0487  BD                		phi 	rd
+0488  BC                		phi		rc
+
+0489                    ML_MoveLeftRightSide:
+0489  8A                		glo 	ra 											; get right mask
+048A  F6                		shr 	 											; shift right and write back
+048B  AA                		plo 	ra
+048C  3B 95             		bnf 	ML_Exit 									; if reached border
+048E  76                		shrc 												; make it $80
+048F  AA                		plo 	ra
+0490  9E                		ghi 	re
+0491  1E                		inc 	re 											; and move forward.
+0492  1F                		inc 	rf
+0493  BE                		phi 	re
+0494  BF                		phi 	rf
+0495                    ML_Exit:
+0495  D4                		sep 	r4
+0496  30 7D             		br 		MoveLeft
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;															Vertical Movement
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0498                    MoveDown:
+0498  8F                		glo 	rf 											; move the upper pointers down one line.
+0499  FC 08             		adi 	8
+049B  AF                		plo 	rf
+049C  8D                		glo 	rd
+049D  FC 08             		adi 	8
+049F  AD                		plo 	rd
+04A0  8E                		glo 	re 											; move the lower pointers up one line.
+04A1  FF 08             		smi 	8
+04A3  AE                		plo 	re
+04A4  8C                		glo 	rc
+04A5  FF 08             		smi 	8
+04A7  AC                		plo 	rc
+04A8  D4                		sep 	r4
+04A9  30 98             		br 		MoveDown
+
+04AB                    MaskTable:													; Bitmask table. Has to stay in the same page as the Asteroid Drawing Code.
+04AB  80402010 08040201 		.db 	$80,$40,$20,$10,$08,$04,$02,$01
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;		 Shift/XOR Drawer for 4 bit x 1 line of graphics. There are 8 entry points each representing one pixel shift, 2 bytes apart
+                        ;
+                        ;	On Entry, 	D 		contains the bits to shift, undefined on exit.
+                        ;			  	RF 		points to the first byte of the two to Xor (should remain unchanged)
+                        ;				RE.L	is undefined on entry and exit
+                        ;				RE.H 	is undefined on entry and exit.
+                        ;
+                        ;	Runs in R5, Return to R4
+                        ;	Note:  you cannot 'loop' subroutine this because you don't know what the entry point was - there are 8 entries and 2 exits :)
+                        ;
+                        ; ***************************************************************************************************************************************
+
+04B3                    ShiftXORDrawerBase:
+04B3  30 DB             		br 		SXD0 										; Shift 0 bits right
+04B5  30 DA             		br 		SXD1 										; Shift 1 right (etc.)
+04B7  30 D9             		br 		SXD2
+04B9  30 D8             		br 		SXD3 										;
+04BB  30 D7             		br 		SXD4 										; up to here, only requires one byte
+04BD  30 DF             		br 		SXD5 										; shift 5 => 4 Shift Rights, then 1 x 16 bit shift rights
+04BF  30 C9             		br 		SXD6										; shift 6-7 => swap and 1-2 shift lefts
+
+04C1                    SXD7:														; shift right x 7 == swap and shift left one in 16 bits
+04C1  FE                		shl 												; shift result left, MSB into DF
+04C2  AE                		plo 	re 											; this is the second byte of data
+04C3  F8 00             		ldi 	0 											; set D = DF, e.. the old MSB is the LSB of this byte	
+04C5  7E                		shlc
+04C6  BE                		phi 	re 											; RE.H RE.L now is a 7 bit shift.
+04C7  30 E9             		br 		SXDXorWord
+
+04C9                    SXD6:														; shift right x 7 == swap and shift left twice in 16 bits
+04C9  FE                		shl 												; (this part same as for SXD7)
+04CA  AE                		plo 	re 												
+04CB  F8 00             		ldi 	0 												
+04CD  7E                		shlc
+04CE  BE                		phi 	re 											; RE.H RE.L now is a 7 bit shift.
+04CF  8E                		glo 	re 											; shift it once more to the left
+04D0  FE                		shl
+04D1  AE                		plo 	re
+04D2  9E                		ghi 	re
+04D3  7E                		shlc
+04D4  BE                		phi 	re
+04D5  30 E9             		br 		SXDXorWord
+
+04D7                    SXD4: 														; shift right x 4
+04D7  F6                		shr
+04D8                    SXD3:														; shift right x 3
+04D8  F6                		shr
+04D9                    SXD2:														; shift right x 2
+04D9  F6                		shr
+04DA                    SXD1:														; shift right x 2
+04DA  F6                		shr
+04DB                    SXD0:														; shift right x 1
+04DB  EF                		sex 	rf 											; xor with the first screen byte
+04DC  F3                		xor
+04DD  5F                		str 	rf
+04DE  D4                		sep 	r4 											; there are 2 exit points
+
+04DF                    SXD5: 														; shift right x 5
+04DF  F6                		shr
+04E0  F6                		shr
+04E1  F6                		shr
+04E2  F6                		shr
+04E3  F6                		shr 												; shift fifth bit into DF
+04E4  BE                		phi 	re 											; RE now contains 16 bit graphic
+04E5  F8 00             		ldi 	0
+04E7  76                		shrc 												; shift DF into bit 7
+04E8  AE                		plo 	re
+
+04E9                    SXDXorWord:
+04E9  EF                		sex 	rf 											; index on RF
+04EA  1F                		inc 	rf 											; Xor RE.L into RF+1
+04EB  8E                		glo 	re
+04EC  F3                		xor
+04ED  73                		stxd
+04EE  9E                		ghi 	re 											; Xor RE.H into RF
+04EF  F3                		xor
+04F0  5F                		str 	rf 									
+04F1  D4                		sep 	r4 											; Note, 2 exit points.
+
+                        ; ***************************************************************************************************************************************
+                        ;														Calculate Screen Position
+                        ;
+                        ;	In: 	RC.0 (Horizontal 0-63) RC.1 (Vertical 0-31)
+                        ;	Out: 	RF.0 and RD.0 point to the byte, RA.1 and RA.0 contain the mask.
+                        ;
+                        ;	Returns to R4. Breaks RC
+                        ;
+                        ; ***************************************************************************************************************************************
+
+04F2                    CalculateScreenPosition:
+04F2  E2                		sex 	r2 											; X = Stack
+04F3  8C                		glo 	rc 											; get the horizontal position (0-63)
+04F4  FA 3F             		ani		63
+04F6  F6                		shr 												; divide by 8 - this is a byte offset now.
+04F7  F6                		shr
+04F8  F6                		shr
+04F9  22                		dec 	r2 											; allocate space for it on the stack
+04FA  52                		str 	r2 											; save it.
+04FB  9C                		ghi 	rc 											; get vertical position (0-31)
+04FC  FA 1F             		ani 	31
+04FE  FE                		shl 												; multiply by 8
+04FF  FE                		shl
+0500  FE                		shl
+0501  F4                		add 												; D = X/8 + Y/8 - the byte position
+0502  AF                		plo 	rf 											; byte position stored in RF.0 and RD.0
+0503  AD                		plo 	rd
+
+0504  8C                		glo 	rc 											; RC.0 anded with 7 and added the table offset to it
+0505  FA 07             		ani 	7
+0507  FC AB             		adi 	<MaskTable 					
+0509  AC                		plo 	rc
+050A  F8 04             		ldi 	>MaskTable									; RC.1 now contains this page address, e.g. RC points to mask table
+050C  BC                		phi 	rc
+050D  0C                		ldn 	rc 											; read mask table
+050E  BA                		phi 	ra 											; store it in RA.1
+050F  AA                		plo 	ra 											; and RA.0
+0510  12                		inc 	r2 											; fix up stack
+0511  D4                		sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														 Keypad Scanner
+                        ;
+                        ; 	Scans keyboard for 2,4,6,8,0 returned in bits 0,1,2,3,7 respectively. Note correlation between these bits (Up,Left,Right,Down)
+                        ;	and the bit patterns in the map. 0 is used to start.
+                        ;
+                        ;	High Level Call, returns to R3. Breaks RF.
+                        ;
+                        ;	PORT: Changing this can easily throw "Branch out of Range" errors where 1802 branches cross page. It may be better to either
+                        ; 		  pad it out to the same length or simply completely replace it.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0512                    ScanKeypad:
+0512  F8 02             		ldi 	2 											; start off by scanning '2'
+0514  BF                		phi 	rf 											; this value goes in RF.
+0515  E2                		sex 	r2
+0516  F8 00             		ldi 	0 											; initial value in RF.
+0518  AF                		plo 	rf
+0519                    SKBLoop:
+0519  9F                		ghi 	rf 											; get current scan value.
+051A  22                		dec 	r2 											; store the scanned value on the stack.
+051B  52                		str 	r2
+051C  62                		out 	2 											; select that latch
+
+051D  9F                		ghi 	rf 											; shift scan left ready for next time
+051E  FC 02             		adi 	2 											; 2,4,6,8,10,12,14,16 but scan only uses lower 4 bits
+0520  BF                		phi 	rf
+0521  8F                		glo 	rf 											; get the current value
+0522  F6                		shr 												; shift right.
+0523  37 27             		b4 		SKBSet 										; check EF3 EF4
+0525  3E 29             		bn3 	SKBSkip
+0527                    SKBSet:
+0527  F9 80             		ori		$80 										; if key pressed or with $80, 7 shifts will make this $01 (for '2')
+0529                    SKBSkip:
+0529  AF                		plo 	rf 											; save the current value
+052A  9F                		ghi 	rf 											; read the scan value
+052B  FB 12             		xri 	$12 										; if reached $12 then finished
+052D  3A 19             		bnz 	SKBLoop
+052F  8F                		glo 	rf 											; load the keypad result into D
+0530  FA 8F             		ani 	$8F 										; we are only interested in 0,1,2,3,7, throw the rest.
+0532  D3                		sep 	r3 											; and exit
+
+
+                        ; ***************************************************************************************************************************************
+                        ;														Draw 4 bit Sprite
+                        ;
+                        ;	RC.0 	x position (0-63) (autoloaded by DrawPlayerSprite)
+                        ;	RC.1 	y position (0-31)
+                        ;	D 		graphic 0-7.
+                        ;
+                        ;	Breaks : R5,R6,RA,RB.1,RC,RD,RE,RF
+                        ;
+                        ;	DrawPlayerSprite loads data in from RA[0],RA[1],RA[2] first.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0533                    DrawPlayerSprite:
+0533  F8 90             		ldi 	XPlayer 									; point RA to player data
+0535  AA                		plo 	ra
+0536  92                		ghi 	r2
+0537  BA                		phi 	ra
+0538  4A                		lda 	ra 											; read X
+0539  FF 01             		smi 	1 											; adjust centre
+053B  AC                		plo 	rc
+053C  4A                		lda 	ra 											; read Y
+053D  FF 01             		smi 	1 											; adjust centre
+053F  BC                		phi 	rc
+0540  4A                		lda 	ra 											; read graphic
+0541  FA 07             		ani 	7 											; only interested in lower 3 bits.
+0543                    DrawSprite:
+0543  FE                		shl 												; multiply graphic # x 4
+0544  FE                		shl 		
+0545  FC E0             		adi 	<AsteroidGraphics							; point RE to the asteroid graphic to use
+0547  BB                		phi 	rb 											; save the low address in RB.1
+
+0548  8C                		glo 	rc 											; get X position
+0549  FA 07             		ani 	7 											; take 3 bits which are in byte position
+054B  FE                		shl 												; x 2
+054C  FC B3             		adi		<ShiftXORDrawerBase 						; set R6 = XOR Drawer Address
+054E  A6                		plo 	r6
+054F  F8 04             		ldi 	>ShiftXORDrawerBase 						
+0551  B6                		phi 	r6
+
+0552  F8 04             		ldi 	>CalculateScreenPosition 					; calculate sprite position. Byte offset in RF.0 RD.0 mask in RA.1 RA.0
+0554  B5                		phi 	r5
+0555  F8 F2             		ldi 	<CalculateScreenPosition
+0557  A5                		plo 	r5
+0558  D5                		sep 	r5
+0559  F8 09             		ldi 	VideoPage 									; make RF point to the video.
+055B  BF                		phi 	rf
+
+055C  9B                		ghi 	rb 											; get the asteroid graphic low pointer
+055D  AA                		plo 	ra 											; make RA point to the asteroid graphic
+055E  F8 0D             		ldi 	>AsteroidGraphics
+0560  BA                		phi 	ra
+
+0561  86                		glo 	r6 											; save XOR Drawer LSB in RB.1
+0562  BB                		phi 	rb
+0563                    DS_Loop:
+0563  4A                		lda 	ra 											; get next graphic
+0564  32 6F             		bz 		DS_Exit 									; exit if finished
+0566  D6                		sep 	r6 											; call the XOR Drawer
+0567  9B                		ghi 	rb 											; fix it back for the next call.
+0568  A6                		plo 	r6
+0569  8F                		glo 	rf 											; next line down.
+056A  FC 08             		adi 	8
+056C  AF                		plo 	rf
+056D  30 63             		br 		DS_Loop
+056F                    DS_Exit:
+056F  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;									Reposition RA[0] (X) and RA[1] (Y) in direction D
+                        ;
+                        ;	Returns to R3, breaks RF.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0570                    MoveObject:
+0570  FA 07             		ani 	7 											; 8 directions
+0572  FE                		shl 												; 2 entries per direction
+0573  FC 88             		adi 	<DirectionTable
+0575  AF                		plo 	rf 											; make RF point to the direction adders
+0576  F8 05             		ldi 	>DirectionTable
+0578  BF                		phi 	rf
+0579  EF                		sex 	rf											; use RF as index
+
+057A  0A                		ldn 	ra 											; read X
+057B  F4                		add  												; add dX
+057C  FA 3F             		ani 	63 											; fix range
+057E  5A                		str 	ra 											; write back
+
+057F  1A                		inc 	ra 											; go to Y, dY
+0580  1F                		inc 	rf
+0581  0A                		ldn 	ra 											; add dY to Y, force into range
+0582  F4                		add
+0583  FA 1F             		ani 	31
+0585  5A                		str 	ra
+
+0586  2A                		dec 	ra 											; fix up RA
+0587  D3                		sep 	r3 											; and exit.
+
+0588                    DirectionTable: 											; dx,dy for each of 8 directions.
+0588  00FF              		db 		0,-1
+058A  01FF              		db 		1,-1
+058C  0100              		db 		1,0
+058E  0101              		db 		1,1
+0590  0001              		db 		0,1
+0592  FF01              		db 		-1,1
+0594  FF00              		db 		-1,0
+0596  FFFF              		db 		-1,-1
+
+                        		
+                        ; ***************************************************************************************************************************************
+                        ;														Single Pixel Drawer
+                        ;
+                        ;	Toggles pixel RC.0,RC.1
+                        ; 	Breaks R5,RC,RD,RE,RF - RA is preserved on the stack.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0598                    DrawPixelLoad:
+0598  22                		dec 	r2 											; save RA on the stack.
+0599  8A                		glo 	ra
+059A  52                		str 	r2
+059B  22                		dec 	r2
+059C  9A                		ghi 	ra
+059D  52                		str 	r2
+059E  4A                		lda 	ra 											; copy coordinates into RC.0,RC.1
+059F  AC                		plo 	rc
+05A0  4A                		lda 	ra
+05A1  BC                		phi 	rc
+05A2                    DrawPixel:
+05A2  F8 04             		ldi 	>CalculateScreenPosition 					; calculate sprite position. Byte offset in RF.0 RD.0 mask in RA.1 RA.0
+05A4  B5                		phi 	r5
+05A5  F8 F2             		ldi 	<CalculateScreenPosition
+05A7  A5                		plo 	r5
+05A8  D5                		sep 	r5
+05A9  F8 09             		ldi 	VideoPage 									; make RF point to the video.
+05AB  BF                		phi 	rf
+05AC  8A                		glo 	ra 											; get mask
+05AD  EF                		sex 	rf 											; xor into screen.
+05AE  F3                		xor
+05AF  5F                		str 	rf
+05B0  42                		lda 	r2 											; restore RA off the stack.
+05B1  BA                		phi 	ra
+05B2  42                		lda 	r2
+05B3  AA                		plo 	ra
+05B4  D3                		sep 	r3	
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;										LFSR Random Number Generator (breaks RF)
+                        ;
+                        ; Returns to : R5 Breaks RF. Reentrant subroutine.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+05B5  92                Random:	ghi 	r2 											; point RF to the Seed Data (2nd byte)
+05B6  BF                		phi 	rf
+05B7  F8 E1             		ldi 	RandomSeed+1
+05B9  AF                		plo 	rf
+05BA  EF                		sex		rf 											; use RF as index register
+
+05BB  0F                		ldn 	rf 											; load the 2nd byte
+05BC  F6                		shr 												; shift right into DF
+05BD  73                		stxd 												; store and point to first byte
+05BE  0F                		ldn 	rf 											; rotate DF into it and out
+05BF  76                		shrc
+05C0  5F                		str 	rf
+05C1  3B C8             		bnf 	RN_NoXor
+05C3  1F                		inc 	rf 											; if LSB was set then xor high byte with $B4
+05C4  0F                		ldn 	rf
+05C5  FB B4             		xri 	$B4
+05C7  73                		stxd 												; store it back and fix up RF again.
+05C8                    RN_NoXor:
+05C8  0F                		ldn 	rf 											; re-read the LSB
+05C9  1F                		inc 	rf
+05CA  F4                		add 												; add the high byte.
+05CB  D5                		sep 	r5 											; and exit.
+05CC  30 B5             		br 		Random
+
+                        ; ***************************************************************************************************************************************
+                        ;													Insert Asteroid of type D
+                        ;
+                        ;	Returns pointer to new Asteroid in RA. Runs in R5, returns to R4
+                        ;	Breaks RB.1, RA, RF, R6
+                        ; ***************************************************************************************************************************************
+
+05CE                    InsertAsteroid:
+05CE  BB                		phi 	rb 											; put type in RB.1
+05CF  92                		ghi 	r2 											; set RA to point to asteroid base records.
+05D0  BA                		phi 	ra
+05D1  F8 00             		ldi 	<AsteroidBase
+05D3  AA                		plo 	ra
+05D4                    IAFindSlot:
+05D4  0A                		ldn 	ra 											; read first item, $FF if not in use
+05D5  FE                		shl 												; shift bit 7 into DF
+05D6  33 E3             		bdf 	IAFoundSlot
+05D8  8A                		glo 	ra 											; go to next record
+05D9  FC 08             		adi 	AsteroidRecSize
+05DB  AA                		plo 	ra
+05DC  FB 80             		xri 	AsteroidEnd 								; if reached the end, give up !
+05DE  3A D4             		bnz		IAFindSlot
+05E0  BA                		phi 	ra 											; return $0000 in RA.
+05E1  AA                		plo 	ra		
+05E2  D4                		sep 	r4
+
+05E3                    IAFoundSlot:
+05E3  F8 05             		ldi 	>Random 									; R6 = Random Routine
+05E5  B6                		phi 	r6
+05E6  F8 B5             		ldi 	<Random
+05E8  A6                		plo 	r6
+05E9  8A                		glo 	ra 											; add 5 to RA
+05EA  FC 05             		adi 	5
+05EC  AA                		plo 	ra
+
+05ED  D6                		sep 	r6 											; random number
+05EE  EA                		sex 	ra 											; X = RA
+05EF  73                		stxd 												; store in RA[5] - means don't all draw/erase same frame.
+
+05F0  9B                		ghi 	rb 											; get type in RB.1
+05F1  FE                		shl 												; x 64 = 0 - 0 1 - 64 2 - 128
+05F2  FE                		shl
+05F3  FE                		shl
+05F4  FE                		shl
+05F5  FE                		shl
+05F6  FE                		shl
+05F7  FD AC             		sdi 	172 										; 172 - n x 32  0 = 172, 1 = 108, 2 = 54
+05F9  73                		stxd 												; store in RA[4]
+05FA  D6                		sep 	r6 											; Direction of movement 0-7 in RA[3]
+05FB  EA                		sex 	ra 											; X = A
+05FC  FA 07             		ani 	7
+05FE  F9 01             		ori 	1 											; force diagonal
+0600  73                		stxd
+
+0601  9B                		ghi 	rb 											; type in RA[2]
+0602  73                		stxd
+
+0603  D6                		sep 	r6 											; y position in RA[1]
+0604  EA                		sex 	ra 											; X = A
+0605  FA 1F             		ani 	31
+0607  73                		stxd
+
+0608  D6                		sep 	r6 											; x position in RA[0] 										
+0609  EA                		sex 	ra 											; X = A
+060A  FA 3F             		ani 	63
+060C  F9 40             		ori 	64 											; set don't draw first bit.
+060E  5A                		str 	ra
+060F  D4                		sep 	r4
+
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														M A I N    P R O G R A M
+                        ;
+                        ; ***************************************************************************************************************************************
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ; 														Set everything up
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0610                    StartGame:
+0610  F8 FF             		ldi 	$0FF 										; initialise the Stack to $2FF
+0612  A2                		plo		r2 											; from $2CF.
+0613  F8 08             		ldi 	RAMPage
+0615  B2                		phi 	r2
+0616  BD                		phi 	rd
+
+0617  F8 E3             		ldi 	Level 										; point RD to Level.
+0619  AD                		plo 	rd
+061A  ED                		sex 	rd
+061B  F8 01             		ldi 	1											; start at level #1
+061D  73                		stxd
+061E  F8 03             		ldi 	3 											; with three lives
+0620  73                		stxd
+0621  73                		stxd 												; makes the MSB of random seed non-zero.
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;													Come here if starting new level.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0622                    StartNewLevel:
+0622  F8 06             		ldi 	>InitialiseLevel 							; call level initialisation code.
+0624  B4                		phi 	r4
+0625  F8 EE             		ldi 	<InitialiseLevel
+0627  A4                		plo 	r4
+0628  D4                		sep 	r4
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;												Restart the current level.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0629                    RestartCurrentLevel:
+0629  F8 09             		ldi 	VideoPage									; point RA to the video page
+062B  BD                		phi 	rd
+062C  BA                		phi 	ra
+062D  F8 00             		ldi 	0
+062F  AA                		plo 	ra
+0630  F8 08             		ldi 	8 											; and RD to VP Line 1
+0632  AD                		plo 	rd
+0633                    RCL_Clear: 													; clear the screen.
+0633  F8 00             		ldi 	$00
+0635  5A                		str 	ra
+0636  1A                		inc 	ra
+0637  8A                		glo 	ra
+0638  3A 33             		bnz 	RCL_Clear
+063A  92                		ghi 	r2 											; read lives left
+063B  BE                		phi 	re
+063C  F8 E2             		ldi 	Lives
+063E  AE                		plo 	re
+063F  0E                		ldn 	re
+0640  AE                		plo 	re 											; store in RE.0
+0641                    RCL_Lives:
+0641  F8 60             		ldi 	$60 										; draw a life marker
+0643  5D                		str 	rd
+0644  8D                		glo 	rd 											; two lines down
+0645  FC 10             		adi 	16
+0647  AD                		plo 	rd
+0648  2E                		dec 	re 											; for however many lives are left.
+0649  8E                		glo 	re
+064A  3A 41             		bnz 	RCL_Lives
+
+064C  F8 93             		ldi 	IsVisible 									; RE points to Visible Flag (RE.1 = Data Area)
+064E  AE                		plo 	re
+064F  EE                		sex 	re
+0650  F8 00             		ldi 	0 											; set Visible Flag ($F3) to zero.
+0652  73                		stxd
+0653  73                		stxd 												; set rotation ($F2) to zero
+0654  F8 10             		ldi 	16 											; set Y ($F1) to 16
+0656  73                		stxd
+0657  F8 20             		ldi 	32 											; set X ($F0) to 32
+0659  73                		stxd
+
+065A  F8 80             		ldi 	MissileBase 								; erase missiles
+065C  AE                		plo 	re
+065D                    RCL_ClearMissiles:
+065D  F8 FF             		ldi 	$FF
+065F  5E                		str 	re
+0660  1E                		inc 	re
+0661  8E                		glo 	re
+0662  FB 90             		xri 	MissileEnd
+0664  3A 5D             		bnz 	RCL_ClearMissiles
+
+0666                    RCL_Wait5: 													; wait for Player 1 Key 5 which is the start key
+0666  22                		dec 	r2
+0667  E2                		sex 	r2
+0668  F8 05             		ldi 	5 											; put 5 on TOS
+066A  52                		str 	r2 							 				; send to keyboardlatch
+066B  62                		out 	2
+066C  3E 66             		bn3 	RCL_Wait5 									; loop back if key 5 not pressed
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;															Main Loop
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+066E                    MainLoop:
+066E  92                		ghi 	r2  										; Point RA to Visibility Mask and set it to $FF
+066F  BA                		phi 	ra 											; (cleared if in central area)
+0670  F8 94             		ldi 	VisiMask
+0672  AA                		plo 	ra
+0673  F8 FF             		ldi 	$FF
+0675  5A                		str 	ra
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;														Move all the asteroids
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0676  F8 00             		ldi 	AsteroidBase  								; Point RA to asteroids
+0678  AA                		plo 	ra
+
+0679                    ML_MoveAsteroid:
+0679  0A                		ldn 	ra 											; get X
+067A  FE                		shl 												; bit 7 set = not used
+067B  33 CF             		bdf 	ML_NextAsteroid2							; skip to next
+
+067D  9A                		ghi 	ra 											; point RF to the speed RA[4]
+067E  BF                		phi 	rf
+067F  8A                		glo 	ra
+0680  FC 04             		adi 	4
+0682  AF                		plo 	rf
+0683  4F                		lda 	rf 											; read speed, advance to speed counter RA[5]
+0684  EF                		sex 	rf
+0685  F4                		add 												; add to speed counter
+0686  5F                		str 	rf
+0687  3B AF             		bnf 	ML_NextAsteroid 							; if no carry out don't move.
+
+0689  F8 04             		ldi 	>DrawAsteroid 								; R4 points to drawing routine
+068B  B4                		phi 	r4
+068C  F8 02             		ldi 	<DrawAsteroid
+068E  A4                		plo 	r4
+
+068F  0A                		ldn 	ra 											; if bit 6 of X is set
+0690  FA 40             		ani 	$40
+0692  3A A0             		bnz 	ML_DontNeedErase 							; then first time, so don't need to erase
+0694  D4                		sep 	r4 											; erase
+
+0695  1A                		inc 	ra 											; read Y
+0696  0A                		ldn 	ra
+0697  2A                		dec 	ra
+0698  FE                		shl 												; if bit 7 set
+0699  3B A0             		bnf 	ML_DontNeedErase 							; then don't destroy asteroid
+069B  F8 FF             		ldi 	$FF 										; mark asteroid unused
+069D  5A                		str  	ra
+069E  30 AF             		br 		ML_NextAsteroid
+
+06A0                    ML_DontNeedErase:
+06A0  F8 05             		ldi 	>MoveObject 								; R5 points to object mover
+06A2  B5                		phi 	r5
+06A3  F8 70             		ldi 	<MoveObject
+06A5  A5                		plo 	r5
+06A6  1A                		inc 	ra 											; get direction at RA[3]
+06A7  1A                		inc 	ra
+06A8  1A                		inc 	ra
+06A9  0A                		ldn 	ra
+06AA  2A                		dec 	ra
+06AB  2A                		dec 	ra
+06AC  2A                		dec 	ra
+06AD  D5                		sep 	r5 											; move (also clears bit 6)
+06AE  D4                		sep 	r4 											; repaint (R4 reentrant)
+
+06AF                    ML_NextAsteroid:
+06AF  0A                		ldn 	ra 											; read X - check in range 22-42
+06B0  FA 3F             		ani 	63
+06B2  FF 16             		smi 	22
+06B4  3B CF             		bnf 	ML_NextAsteroid2
+06B6  FF 14             		smi 	20
+06B8  33 CF             		bdf 	ML_NextAsteroid2
+
+06BA  1A                		inc 	ra 											; read Y - check in range 11-21
+06BB  0A                		ldn 	ra
+06BC  FA 1F             		ani		31
+06BE  2A                		dec 	ra
+06BF  FF 0B             		smi 	11
+06C1  3B CF             		bnf 	ML_NextAsteroid2
+06C3  FF 0A             		smi 	10
+06C5  33 CF             		bdf 	ML_NextAsteroid2
+
+06C7  92                		ghi 	r2 											; clear visimask flag if in area.
+06C8  BE                		phi 	re
+06C9  F8 94             		ldi 	VisiMask
+06CB  AE                		plo 	re
+06CC  F8 00             		ldi 	0
+06CE  5E                		str 	re
+
+06CF                    ML_NextAsteroid2:
+06CF  8A                		glo 	ra 											; point RA to next asteroid
+06D0  FC 08             		adi 	AsteroidRecSize
+06D2  AA                		plo 	ra
+06D3  FB 80             		xri 	AsteroidEnd 								; go back if reached the end.
+06D5  3A 79             		bnz		ML_MoveAsteroid
+
+06D7  F8 05             		ldi 	>ScanKeypad 								; read the keypad
+06D9  B4                		phi 	r4
+06DA  F8 12             		ldi 	<ScanKeypad
+06DC  A4                		plo 	r4
+06DD  D4                		sep 	r4
+06DE  22                		dec 	r2 											; store on stack.
+06DF  52                		str 	r2
+
+06E0  F8 06             		ldi 	>ML_JumpPage								; set R4 to ML_JumpPage - we can't do LBR.
+06E2  B4                		phi 	r4
+06E3  F8 E7             		ldi 	<ML_JumpPage
+06E5  A4                		plo 	r4
+06E6  D4                		sep 	r4 											; transfer there
+06E7                    ML_JumpPage:
+06E7  F8 0C             		ldi 	>MovePlayerSection 							; set R3 to MovePlayerSection
+06E9  B3                		phi 	r3
+06EA  F8 00             		ldi 	<MovePlayerSection
+06EC  A3                		plo 	r3
+06ED  D3                		sep 	r3 											; and go there.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Set up new Level
+                        ;
+                        ; ***************************************************************************************************************************************
+
+06EE                    InitialiseLevel:
+06EE  92                		ghi 	r2
+06EF  BA                		phi 	ra 											; erase asteroid data to all $FFs
+06F0  F8 00             		ldi 	AsteroidBase
+06F2  AA                		plo 	ra
+06F3                    AsteroidClear:
+06F3  F8 FF             		ldi 	$FF
+06F5  5A                		str 	ra
+06F6  1A                		inc 	ra
+06F7  8A                		glo 	ra
+06F8  FB 80             		xri 	AsteroidEnd
+06FA  3A F3             		bnz 	AsteroidClear
+
+06FC  F8 E3             		ldi 	Level 										; get level.
+06FE  AA                		plo 	ra
+06FF  0A                		ldn 	ra 				
+0700  F6                		shr 												; level/2 + 3
+0701  FC 03             		adi 	3
+0703  22                		dec 	r2 											; save on stack space.
+0704  52                		str 	r2
+0705  FF 09             		smi 	9
+0707  3B 0C             		bnf		SNL_InsertLoop								; max out at 9
+0709  F8 09             		ldi 	9
+070B  52                		str 	r2
+
+070C                    SNL_InsertLoop:
+070C  F8 05             		ldi 	>InsertAsteroid 							; call insert asteroid code.
+070E  B5                		phi 	r5
+070F  F8 CE             		ldi 	<InsertAsteroid
+0711  A5                		plo 	r5
+0712  F8 02             		ldi 	2											; type 2 - the big ones.
+0714  D5                		sep 	r5
+
+0715  02                		ldn 	r2 											; decrement counter till zero.
+0716  FF 01             		smi 	1
+0718  52                		str 	r2
+0719  3A 0C             		bnz 	SNL_InsertLoop
+071B  12                		inc 	r2
+
+071C  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;														Collision Check
+                        ;
+                        ;	Check collision of 4 missiles + player with Asteroid at RC.
+                        ;
+                        ;	Runs in R4, returns to R3. Jumps out if player has lost.
+                        ; ***************************************************************************************************************************************
+
+071D                    CollisionCheck:
+071D  F8 80             		ldi 	MissileBase 								; point RD to the missile base
+071F  AD                		plo 	rd
+0720  92                		ghi 	r2
+0721  BD                		phi 	rd
+0722  1C                		inc 	rc 											; point RC to RC[2] which is the asteroid type
+0723  1C                		inc 	rc
+0724  0C                		ldn 	rc 											; read in asteroid type
+0725  2C                		dec 	rc 											; point RC back to RC[0]
+0726  2C                		dec 	rc
+0727  22                		dec 	r2 											; make space on the stack
+0728  FC 02             		adi 	2 											; collision is |dx| and |dy| < type+2 (e.g. 2,3,4)
+072A  52                		str 	r2
+072B                    CC_Loop:
+072B  0D                		ldn 	rd 											; read missile/player X
+072C  FA C0             		ani 	$C0
+072E  3A 9D             		bnz 	CC_Next 									; if non-zero either unused bit (7) or new (6) is set so skip
+0730  1D                		inc 	rd 											; read RD[1] e.g. missile/player Y
+0731  0D                		ldn 	rd
+0732  2D                		dec 	rd
+0733  FE                		shl 												; bit 7 of RD[1] - the marked for deletion bit - in DF
+0734  33 9D             		bdf 	CC_Next 									; skip if marked for deletion.
+
+0736  0D                		ldn 	rd 											; read X.Missile
+0737  EC                		sex 	rc
+0738  F7                		sm 													; calculate X.Player - X.Asteroid
+0739  33 3D             		bdf 	CC_Abs1 									; calculate |X.Player - X.Asteroid|
+073B  FD 00             		sdi 	0
+073D  E2                CC_Abs1:sex 	r2 											; point to collision width
+073E  F7                		sm   												; if >= collision width, go to next record
+073F  33 9D             		bdf 	CC_Next
+
+0741  1D                		inc 	rd 											; read Y.Player
+0742  0D                		ldn 	rd
+0743  2D                		dec 	rd
+0744  EC                		sex 	rc 											; calculate Y.Player-Y.Asteroid
+0745  1C                		inc 	rc
+0746  F7                		sm
+0747  2C                		dec 	rc
+0748  33 4C             		bdf 	CC_Abs2 									; calculate |Y.Player - Y.Asteroid|
+074A  FD 00             		sdi 	0
+074C  E2                CC_Abs2:sex 	r2 											; if >= collision width, go to next record
+074D  F7                		sm
+074E  33 9D             		bdf 	CC_Next
+
+0750  8D                		glo 	rd 											; get LSB of collided player/missile.
+0751  FB 90             		xri 	XPlayer 									; hit the player
+0753  32 A7             		bz 		CC_LostLife
+
+0755  1D                		inc 	rd  										; mark bullet for deletion - set RD[1] bit 7
+0756  0D                		ldn 	rd
+0757  F9 80             		ori 	$80
+0759  5D                		str 	rd
+075A  2D                		dec 	rd
+
+075B  1C                		inc 	rc 											; mark asteroid for deletion - set RC[1] bit 7
+075C  0C                		ldn 	rc
+075D  F9 80             		ori 	$80
+075F  5C                		str 	rc
+0760  1C                		inc 	rc 											; get asteroid type
+0761  0C                		ldn 	rc  										; load type RC[2] into R7.0
+0762  A7                		plo 	r7 											
+0763  2C                		dec 	rc 											; fix RC back to point to asteroid base.
+0764  2C                		dec 	rc
+
+0765  1D                		inc 	rd 											; point RD to missile direction
+0766  1D                		inc 	rd
+0767  0D                		ldn 	rd 											; load rotation angle from RC[3] into r7.1
+0768  FF 02             		smi 	2 											; subtract 2 i.e. a right angle to the missile direction.
+076A  B7                		phi 	r7
+076B  2D                		dec 	rd 											; fix RD back
+076C  2D                		dec 	rd
+
+076D  92                		ghi 	r2 											; point RE to points to add
+076E  BE                		phi 	re
+076F  F8 E4             		ldi 	PointsToAdd
+0771  AE                		plo 	re
+0772  87                		glo 	r7 											; type destroyed 2,1,0
+0773  FD 03             		sdi 	3 											; score is 1,2,3 x 100 points
+0775  EE                		sex 	re 											; add to points to add.
+0776  F4                		add
+0777  5E                		str 	re
+
+0778  87                		glo 	r7 											; get asteroid type
+0779  32 9D             		bz 		CC_Next 									; if zero don't spawn smaller ones.
+077B  F8 02             		ldi 	2 											; set RE.0 = 2, the counter.
+077D  AE                		plo 	re
+077E                    CC_NewRocks:
+077E  F8 05             		ldi 	>InsertAsteroid 							; create a new asteroid in RA
+0780  B5                		phi 	r5
+0781  F8 CE             		ldi 	<InsertAsteroid
+0783  A5                		plo 	r5
+0784  87                		glo 	r7 											; get asteroid type shot
+0785  FF 01             		smi 	1 											; one less is the asteroid type to be created, returns a pointer in RA.
+0787  D5                		sep 	r5
+
+0788  4C                		lda 	rc 											; get X of destroyed asteroid
+0789  F9 40             		ori 	$40 										; set 'new' flag.
+078B  5A                		str 	ra
+078C  1A                		inc 	ra
+078D  0C                		ldn 	rc 											; get Y of destroyed asteroid
+078E  5A                		str 	ra
+078F  2C                		dec 	rc 											; rc back pointing at record
+0790  1A                		inc 	ra 											; RA now at RA[2] type
+0791  1A                		inc 	ra 											; RA now at RA[3] rotation
+0792  97                		ghi 	r7 											; get rotation, flip 180 degrees
+0793  FC 04             		adi 	4
+0795  FA 07             		ani 	7
+0797  B7                		phi 	r7
+0798  5A                		str 	ra 											; store in the rotation slot.
+0799  2E                		dec 	re 											; do it twice
+079A  8E                		glo 	re
+079B  3A 7E             		bnz 	CC_NewRocks
+
+079D  8D                CC_Next:glo 	rd 											; advance RD to next record
+079E  FC 04             		adi 	MissileRecSize
+07A0  AD                		plo 	rd
+07A1  FB 94             		xri 	MissileEnd+MissileRecSize 					; go one further - this is the player collision check
+07A3  3A 2B             		bnz 	CC_Loop 									; keep going.
+
+07A5  12                		inc 	r2 											; fix stack up
+07A6  D3                		sep 	r3
+
+07A7                    CC_LostLife:
+07A7  92                		ghi 	r2 											; player collision. Check that player is visible
+07A8  BE                		phi 	re
+07A9  F8 93             		ldi 	IsVisible
+07AB  AE                		plo 	re
+07AC  0E                		ldn		re
+07AD  32 9D             		bz 		CC_Next 									; if not visible ignore this.
+
+07AF  12                		inc 	r2 											; fix stack
+07B0  F8 0D             		ldi 	>Dead 										; go to lost life code, jump out of routine.
+07B2  B3                		phi 	r3
+07B3  F8 39             		ldi 	<Dead
+07B5  A3                		plo 	r3
+07B6  D3                		sep 	r3
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ; 														ROM BREAK HERE
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;														Move the player
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0C00                    		.org 	$C00
+0C00                    SecondRomBase:
+
+0C00                    MovePlayerSection:
+
+0C00  92                		ghi 	r2
+0C01  BD                		phi 	rd
+0C02  BE                		phi 	re
+0C03  F8 95             		ldi 	SpeedCounter 								; point RE to player speed counter
+0C05  AE                		plo 	re
+0C06  0E                		ldn 	re 											; add speed to speed counter
+0C07  FC A0             		adi 	PlayerSpeed
+0C09  5E                		str 	re
+0C0A  3B 85             		bnf 	ML_EndPlayerMove 							; no carry out, don't move.
+
+0C0C  F8 93             		ldi 	IsVisible 									; point RD to IsVisible	, check if player has been made visible yet.
+0C0E  AD                		plo 	rd
+0C0F  4D                		lda 	rd 											; read isVisible and point RD to Visimask
+0C10  3A 19             		bnz 	ML_PlayerMove
+0C12  0D                		ldn 	rd  										; read Visimask
+0C13  32 85             		bz 		ML_EndPlayerMove 							; if that is zero, then can't come into existence yet.
+0C15  2D                		dec 	rd 											; point back to IsVisible, D != 0
+0C16  5D                		str 	rd 											; now mark it as been made visible
+0C17  30 45             		br 		ML_RedrawPlayer
+
+0C19                    ML_PlayerMove:
+0C19  F8 05             		ldi 	>DrawPlayerSprite							; erase the player
+0C1B  B4                		phi 	r4
+0C1C  F8 33             		ldi 	<DrawPlayerSprite
+0C1E  A4                		plo 	r4
+0C1F  D4                		sep 	r4
+
+0C20  92                		ghi 	r2 											; RA points to player, RE to rotation
+0C21  BA                		phi 	ra
+0C22  BE                		phi 	re
+0C23  F8 90             		ldi 	XPlayer
+0C25  AA                		plo 	ra
+0C26  F8 92             		ldi 	Rotation
+0C28  AE                		plo 	re
+
+0C29  0E                		ldn 	re 											; read rotation
+0C2A  AD                		plo 	rd 											; put in RD
+0C2B  02                		ldn 	r2 											; read keypad
+0C2C  F6                		shr
+0C2D  F6                		shr  												; shift bit 1 into DF
+0C2E  3B 31             		bnf 	ML_NotLeft
+0C30  2D                		dec 	rd 											; if set rotate left
+0C31                    ML_NotLeft:
+0C31  F6                		shr 												; shift bit 2 into DF
+0C32  3B 35             		bnf 	ML_NotRight
+0C34  1D                		inc 	rd 											; if set rotate right
+0C35                    ML_NotRight:
+0C35  8D                		glo 	rd 											; store rotation back anded with 7
+0C36  FA 07             		ani 	7
+0C38  5E                		str 	re
+
+
+0C39  02                		ldn 	r2 											; read keypad state off stack
+0C3A  F6                		shr  												; bit 0 (key 2) into DF
+0C3B  3B 45             		bnf 	ML_RedrawPlayer 							; if not set, don't move.
+
+0C3D  F8 05             		ldi 	>MoveObject 								; R4 points to object mover
+0C3F  B4                		phi 	r4
+0C40  F8 70             		ldi 	<MoveObject
+0C42  A4                		plo 	r4
+0C43  0E                		ldn 	re 											; read rotation in.
+0C44  D4                		sep 	r4 											; move the player.
+
+0C45                    ML_RedrawPlayer:
+0C45  F8 05             		ldi 	>DrawPlayerSprite							; redraw the player before exiting.
+0C47  B4                		phi 	r4
+0C48  F8 33             		ldi 	<DrawPlayerSprite
+0C4A  A4                		plo 	r4
+0C4B  D4                		sep 	r4
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;											Check for player fire, launch missile if true.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0C4C  92                		ghi 	r2 											; point RF to last fire byte
+0C4D  BF                		phi		rf
+0C4E  BA                		phi 	ra  										; set RA.1 to data area
+0C4F  F8 96             		ldi 	LastFire
+0C51  AF                		plo 	rf
+
+0C52  02                		ldn 	r2 											; reload keyboard byte off stack
+0C53  FA 80             		ani 	$80											; isolate bit 7 (fire) into D
+0C55  EF                		sex 	rf 											; ex-or with old status.
+0C56  F3                		xor
+0C57  32 85             		bz  	ML_EndPlayerMove 							; if no change then exit player move.
+0C59  F3                		xor 												; ex-or brings back new status.
+0C5A  5F                		str 	rf 											; save in last status byte
+0C5B  32 85             		bz 		ML_EndPlayerMove 							; if 0 then transition 1->0, exit
+
+0C5D  F8 80             		ldi 	MissileBase 								; fire missile request, set RA.0 to missile base
+0C5F  AA                		plo 	ra 											; look for free missile space.
+0C60                    ML_FindFreeMissile:
+0C60  0A                		ldn 	ra 											; look in missile slot.
+0C61  FE                		shl 												; check bit 7
+0C62  33 6E             		bdf 	ML_FoundFreeMissileSpace  					; if set, free slot so create new missile
+0C64  8A                		glo 	ra 											; advance to next slot
+0C65  FC 04             		adi 	MissileRecSize
+0C67  AA                		plo 	ra
+0C68  FB 90             		xri 	MissileEnd 									; reached the end
+0C6A  3A 60             		bnz 	ML_FindFreeMissile 							; try again.
+0C6C  30 85             		br 		ML_EndPlayerMove 							; all missiles currently in use.
+
+0C6E                    ML_FoundFreeMissileSpace:
+0C6E  F8 90             		ldi 	XPlayer 									; RF points to player data, RA to missile
+0C70  AF                		plo 	rf
+0C71  4F                		lda 	rf 											; copy X across
+0C72  F9 40             		ori 	$40 										; set the not-drawn bit.
+0C74  5A                		str 	ra
+0C75  1A                		inc 	ra
+0C76  4F                		lda 	rf 											; copy Y across
+0C77  5A                		str 	ra
+0C78  1A                		inc 	ra
+0C79  4F                		lda 	rf 											; copy rotation = missile direction across.
+0C7A  5A                		str 	ra
+0C7B  1A                		inc 	ra
+0C7C  F8 18             		ldi 	MissileLifeSpan 							; set the missile life counter
+0C7E  5A                		str 	ra
+
+0C7F  F8 CD             		ldi 	Studio2BeepTimer 							; short beep.
+0C81  AA                		plo 	ra
+0C82  F8 05             		ldi 	5
+0C84  5A                		str 	ra
+
+0C85                    ML_EndPlayerMove:
+0C85  12                		inc 	r2 											; fix stack back up.
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;													Move all live missiles
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0C86  92                		ghi 	r2 											; point RA to missile start
+0C87  BA                		phi 	ra
+0C88  F8 80             		ldi 	MissileBase
+0C8A  AA                		plo 	ra
+
+
+0C8B                    ML_MoveMissiles:
+0C8B  0A                		ldn 	ra 											; read X
+0C8C  FE                		shl 												; if bit 7 set not in use.
+0C8D  33 C0             		bdf 	ML_NextMissile
+0C8F  FE                		shl 												; if bit 6 go to move, redraw, exit
+0C90  33 99             		bdf 	ML_MissileNoErase
+
+0C92  F8 05             		ldi 	>DrawPixelLoad 								; set R4 to the pixel loader.
+0C94  B4                		phi 	r4
+0C95  F8 98             		ldi 	<DrawPixelLoad
+0C97  A4                		plo 	r4
+0C98  D4                		sep 	r4 											; erase previous missile
+
+0C99                    ML_MissileNoErase:
+0C99  1A                		inc 	ra 											; read Y from RA[1]
+0C9A  0A                		ldn 	ra
+0C9B  2A                		dec 	ra
+0C9C  FE                		shl 												; bit 7 into DF
+0C9D  33 BD             		bdf 	ML_MissileDestroy 							; if set, mark it for destroying.
+0C9F  8A                		glo 	ra 											; point RE at life counter RA[3]
+0CA0  FC 03             		adi 	3
+0CA2  AE                		plo 	re
+0CA3  9A                		ghi 	ra
+0CA4  BE                		phi 	re
+
+0CA5  0E                		ldn 	re 											; read the life counter RA[3]
+0CA6  FF 01             		smi 	1 											; decrement it and update.		
+0CA8  5E                		str 	re
+0CA9  32 BD             		bz 		ML_MissileDestroy 							; if zero destroy the missile
+0CAB  2E                		dec 	re 											; RE now points at missile direction RA[2]
+
+0CAC  F8 05             		ldi 	>MoveObject 								; R4 points to object mover
+0CAE  B4                		phi 	r4
+0CAF  F8 70             		ldi 	<MoveObject
+0CB1  A4                		plo 	r4
+0CB2  0E                		ldn 	re											; read rotation in.
+0CB3  D4                		sep 	r4 											; move the missile
+
+0CB4  F8 05             		ldi 	>DrawPixelLoad 								; set R4 to the pixel loader.
+0CB6  B4                		phi 	r4
+0CB7  F8 98             		ldi 	<DrawPixelLoad
+0CB9  A4                		plo 	r4
+0CBA  D4                		sep 	r4 											; redraw the missile
+0CBB  30 C0             		br 		ML_NextMissile
+
+0CBD                    ML_MissileDestroy:											; destroy the missile
+0CBD  F8 FF             		ldi 	$FF 										; set MA[0] to $FF terminating it.
+0CBF  5A                		str 	ra
+0CC0                    ML_NextMissile:
+0CC0  8A                		glo 	ra 											; go to next missile
+0CC1  FC 04             		adi 	MissileRecSize
+0CC3  AA                		plo 	ra
+0CC4  FB 90             		xri 	MissileEnd 									; if not reached end, go back
+0CC6  3A 8B             		bnz 	ML_MoveMissiles
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;													Collision Testing
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        	
+0CC8  92                		ghi 	r2
+0CC9  BC                		phi		rc
+0CCA  F8 00             		ldi 	AsteroidBase 							 	; scan through asteroids check collisions with bullets/player.
+0CCC  AC                		plo 	rc
+0CCD                    ML_CollisionLoop:
+0CCD  0C                		ldn 	rc 											; read asteroid X
+0CCE  FA C0             		ani 	$C0 										; bit 7 = unused, bit 6 = newly created. Both must be clear.
+0CD0  3A D9             		bnz  	ML_CollisionNext							; if bit 7 set this record is empty.
+0CD2  F8 07             		ldi 	>CollisionCheck 							; call collision check
+0CD4  B4                		phi 	r4
+0CD5  F8 1D             		ldi 	<CollisionCheck
+0CD7  A4                		plo 	r4
+0CD8  D4                		sep 	r4
+0CD9                    ML_CollisionNext:
+0CD9  8C                		glo 	rc
+0CDA  FC 08             		adi 	AsteroidRecSize 							; go to next asteroid record.
+0CDC  AC                		plo 	rc
+0CDD  FB 80             		xri 	AsteroidEnd 								; keep going till the end.
+0CDF  3A CD             		bnz 	ML_CollisionLoop
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;													Adding accrued points
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0CE1                    ML_AddPoints:
+0CE1  F8 E4             		ldi 	PointsToAdd 								; point RA to points to add
+0CE3  AA                		plo 	ra
+0CE4  0A                		ldn 	ra 											; read points to add
+0CE5  32 F8             		bz 		ML_EndAddPoints 							; exit if zero
+0CE7  FF 01             		smi 	1 											; decrement accrued
+0CE9  5A                		str 	ra
+0CEA  1A                		inc 	ra 											; advance to units digit.
+0CEB  1A                		inc 	ra 											; advance to tens digit.
+0CEC                    ML_BumpDigit:
+0CEC  1A                		inc 	ra 											; advance to next digit
+0CED  0A                		ldn 	ra 											; increment and save digit
+0CEE  FC 01             		adi 	1
+0CF0  5A                		str 	ra
+0CF1  FF 0A             		smi 	10 											; if < 10 then see if any more accrued points
+0CF3  3B E1             		bnf 	ML_AddPoints
+0CF5  5A                		str 	ra 											; save result back (e.g. mod 10)
+0CF6  30 EC             		br 		ML_BumpDigit 								; do the next digit. (e.g. tens->hundreds)
+0CF8                    ML_EndAddPoints:
+0CF8  30 FF             		br 		TimerSync-1
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ; 													Timer Synchronisation
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0CFF                    		.org 	SecondRomBase-1+256
+
+0CFF  92                		ghi 	r2
+0D00                    TimerSync:
+0D00  92                		ghi 	r2
+0D01  BA                		phi		ra
+0D02  F8 CE             		ldi 	Studio2SyncTimer 							; RA points to S2 sync timer.
+0D04  AA                		plo 	ra
+0D05                    ML_WaitTimer:
+0D05  0A                		ldn 	ra
+                        ;		bnz 	ML_WaitTimer
+0D06  F8 03             		ldi 	3
+0D08  5A                		str 	ra
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ; 												Check if level completed.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0D09  F8 00             		ldi 	AsteroidBase 								; set RA point to asteroid base
+0D0B  AA                		plo 	ra
+0D0C                    ML_CheckCompleted:
+0D0C  0A                		ldn 	ra 											; read ra
+0D0D  FE                		shl 												; shift alive bit into DF
+0D0E  3B 27             		bnf 	LongBranchMainLoop							; if there's a live asteroid keep going round.
+0D10  8A                		glo 	ra 											; go to next record.
+0D11  FC 08             		adi 	AsteroidRecSize
+0D13  AA                		plo 	ra
+0D14  FB 80             		xri 	AsteroidEnd 								; check all asteroids
+0D16  3A 0C             		bnz 	ML_CheckCompleted
+
+0D18  F8 E3             		ldi 	Level 										; completed level - bump to next.
+0D1A  AA                		plo 	ra
+0D1B  0A                		ldn 	ra
+0D1C  FC 01             		adi 	1
+0D1E  5A                		str 	ra
+
+0D1F  F8 06             		ldi 	>StartNewLevel 								; start a new level.
+0D21  BC                		phi 	rc
+0D22  F8 22             		ldi 	<StartNewLevel
+0D24  AC                		plo 	rc
+0D25  30 2D             		br 		LongBranchToRC
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ; 											Loop around because we have no LBR
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0D27                    LongBranchMainLoop:
+0D27  F8 06             Loop2:	ldi 	>MainLoop
+0D29  BC                		phi 	rc
+0D2A  F8 6E             		ldi 	<MainLoop
+0D2C  AC                		plo 	rc
+
+0D2D                    LongBranchToRC:
+0D2D  F8 0D             		ldi 	>JumpToRC 										; so we're stuck with this.
+0D2F  B4                		phi 	r4
+0D30  F8 34             		ldi 	<JumpToRC
+0D32  A4                		plo 	r4
+0D33  D4                		sep 	r4
+
+0D34                    JumpToRC: 														; here with P = 4
+0D34  9C                		ghi 	rc 												; copy RC to R3
+0D35  B3                		phi 	r3
+0D36  8C                		glo 	rc
+0D37  A3                		plo 	r3
+0D38  D3                		sep 	r3 												; jump to r3
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;															Life Lost
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0D39  92                Dead:	ghi 	r2 												; point RF to Lives
+0D3A  BF                		phi		rf
+0D3B  F8 E2             		ldi 	Lives
+0D3D  AF                		plo 	rf
+0D3E  0F                		ldn 	rf 												; decrement lives count
+0D3F  FF 01             		smi 	1
+0D41  5F                		str 	rf
+
+0D42  32 5B             		bz 		GameOver
+
+0D44  F8 00             		ldi 	AsteroidBase 									; set all the new flags in the asteroids as Restart will clear screen.
+0D46  AF                		plo 	rf
+0D47                    DeadSetNew:
+0D47  0F                		ldn 	rf
+0D48  F9 40             		ori 	$40
+0D4A  5F                		str 	rf
+0D4B  8F                		glo		rf
+0D4C  FC 08             		adi 	AsteroidRecSize
+0D4E  AF                		plo 	rf
+0D4F  FB 80             		xri 	AsteroidEnd
+0D51  3A 47             		bnz		DeadSetNew
+
+0D53  F8 06             		ldi 	>RestartCurrentLevel 							; restart the current level
+0D55  BC                		phi 	rc
+0D56  F8 29             		ldi 	<RestartCurrentLevel
+0D58  AC                		plo 	rc
+0D59  30 2D             		br 		LongBranchToRC
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+                        ;															Game Over
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------		
+
+0D5B                    GameOver:
+0D5B  92                		ghi 	r2 										; point RD to the score.
+0D5C  BD                		phi 	rd
+0D5D  F8 E5             		ldi 	Score
+0D5F  AD                		plo 	rd
+0D60  F8 06             		ldi 	6 										; make 3 LSBs of E 110 (screen position)
+0D62  AE                		plo 	re
+0D63  F8 0D             		ldi 	>WriteDisplayByte 						; point RA to the byte-writer
+0D65  BA                		phi 	ra
+0D66  F8 9A             		ldi 	<WriteDisplayByte
+0D68  AA                		plo 	ra
+
+0D69                    ScoreWriteLoop:
+0D69  8E                		glo 	re 										; convert 3 LSBs of RE to screen address
+0D6A  FA 07             		ani 	7
+0D6C  FC 58             		adi 	128-40
+0D6E  AE                		plo 	re
+0D6F  F8 09             		ldi 	VideoPage 								; put in video page
+0D71  BE                		phi 	re
+
+0D72  F8 FF             		ldi 	$FF
+0D74  DA                		sep 	ra
+0D75  F8 00             		ldi		$00
+0D77  DA                		sep 	ra
+
+0D78  4D                		lda 	rd 										; read next score digit
+0D79  FC 10             		adi 	$10 									; score table offset in BIOS
+0D7B  A4                		plo 	r4
+0D7C  F8 02             		ldi 	$02 									; read from $210+n
+0D7E  B4                		phi 	r4
+0D7F  04                		ldn 	r4 										; into D, the new offset
+0D80  A4                		plo 	r4 										; put into R4, R4 now contains 5 rows graphic data
+
+0D81  F8 05             		ldi 	5 										; set R5.0 to 6
+0D83  A5                		plo 	r5
+0D84                    OutputChar:
+0D84  44                		lda 	r4 										; read character and advance
+0D85  F6                		shr 											; centre in byte
+0D86  F6                		shr
+0D87  DA                		sep 	ra 										; output it
+0D88  25                		dec 	r5 										; decrement counter
+0D89  85                		glo 	r5
+0D8A  3A 84             		bnz 	OutputChar 								; loop back if nonzero
+
+0D8C  F8 00             		ldi		$00
+0D8E  DA                		sep 	ra
+0D8F  F8 FF             		ldi 	$FF
+0D91  DA                		sep 	ra
+
+0D92  2E                		dec 	re 										; previous value of 3 LSBs.
+0D93  8E                		glo 	re
+0D94  FA 07             		ani 	7
+0D96  3A 69             		bnz 	ScoreWriteLoop
+
+0D98  30 98             Halt:	br 		Halt
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											Write byte D to RE. Add 8 to RE
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0D9A                    WriteDisplayByte:
+0D9A  5E                		str 	re 											; save result
+0D9B  8E                		glo 	re 											; down one row
+0D9C  FC 08             		adi 	8
+0D9E  AE                		plo 	re
+0D9F  D3                		sep 	r3
+0DA0  30 9A             		br 		WriteDisplayByte
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Asteroid Ship Graphics
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0DE0                    		.org 	SecondROMBase+$1E0
+0DE0                    AsteroidGraphics:
+0DE0  40A0A000          		.db 	64,160,160,0
+0DE4  60A04000          		.db 	96,160,64,0
+0DE8  C020C000          		.db 	192,32,192,0
+0DEC  40A06000          		.db 	64,160,96,0
+0DF0  A0A04000          		.db 	160,160,64,0
+0DF4  40A0C000          		.db 	64,160,192,0
+0DF8  60806000          		.db 	96,128,96,0
+0DFC  C0A04000          		.db 	192,160,64,0
+
+0E00  00                		.db 	0
+
+00000 Total Error(s)
+
+ASTEROIDBASE       0000 E  ASTEROIDCLEAR      06F3    ASTEROIDCOUNT      0010 E
+ASTEROIDEND        0080 E  ASTEROIDGRAPHICS   0DE0    ASTEROIDRECSIZE    0008 E
+CALCULATESCREENPOSITION                       04F2    CC_ABS1            073D
+CC_ABS2            074C    CC_LOOP            072B    CC_LOSTLIFE        07A7
+CC_NEWROCKS        077E    CC_NEXT            079D    COLLISIONCHECK     071D
+DA_ASTEROID2       0450    DA_EXIT            0459    DA_NOT0            0445
+DEAD               0D39    DEADSETNEW         0D47    DIRECTIONTABLE     0588
+DRAWASTEROID       0402    DRAWPIXEL          05A2    DRAWPIXELLOAD      0598
+DRAWPLAYERSPRITE   0533    DRAWSPRITE         0543    DS_EXIT            056F
+DS_LOOP            0563    GAMEOVER           0D5B    HALT               0D98
+IAFINDSLOT         05D4    IAFOUNDSLOT        05E3    INITIALISELEVEL    06EE
+INSERTASTEROID     05CE    ISVISIBLE          0093 E  JUMPTORC           0D34
+LASTFIRE           0096 E  LEVEL              00E3 E  LIVES              00E2 E
+LONGBRANCHMAINLOOP 0D27    LONGBRANCHTORC     0D2D    LOOP2              0D27
+MAINLOOP           066E    MASKTABLE          04AB    MISSILEBASE        0080 E
+MISSILECOUNT       0004 E  MISSILEEND         0090 E  MISSILELIFESPAN    0018 E
+MISSILERECSIZE     0004 E  ML_ADDPOINTS       0CE1    ML_BUMPDIGIT       0CEC
+ML_CHECKCOMPLETED  0D0C    ML_COLLISIONLOOP   0CCD    ML_COLLISIONNEXT   0CD9
+ML_DONTNEEDERASE   06A0    ML_ENDADDPOINTS    0CF8    ML_ENDPLAYERMOVE   0C85
+ML_EXIT            0495    ML_FINDFREEMISSILE 0C60    
+ML_FOUNDFREEMISSILESPACE                      0C6E    ML_JUMPPAGE        06E7
+ML_MISSILEDESTROY  0CBD    ML_MISSILENOERASE  0C99    ML_MOVEASTEROID    0679
+ML_MOVELEFTRIGHTSIDE                          0489    ML_MOVEMISSILES    0C8B
+ML_NEXTASTEROID    06AF    ML_NEXTASTEROID2   06CF    ML_NEXTMISSILE     0CC0
+ML_NOTLEFT         0C31    ML_NOTRIGHT        0C35    ML_PLAYERMOVE      0C19
+ML_REDRAWPLAYER    0C45    ML_WAITTIMER       0D05    MOVEDOWN           0498
+MOVELEFT           047D    MOVEOBJECT         0570    MOVEPLAYERSECTION  0C00
+OUTPUTCHAR         0D84    PLAYERSPEED        00A0 E  PLOTPIXEL          0461
+POINTSTOADD        00E4 E  PP_LEFTSIDE        0472    R0                 0000 E
+R1                 0001 E  R2                 0002 E  R3                 0003 E
+R4                 0004 E  R5                 0005 E  R6                 0006 E
+R7                 0007 E  R8                 0008 E  R9                 0009 E
+RA                 000A E  RAMPAGE            0008 E  RANDOM             05B5
+RANDOMSEED         00E0 E  RB                 000B E  RC                 000C E
+RCL_CLEAR          0633    RCL_CLEARMISSILES  065D    RCL_LIVES          0641
+RCL_WAIT5          0666    RD                 000D E  RE                 000E E
+RESTARTCURRENTLEVEL                           0629    RF                 000F E
+RN_NOXOR           05C8    ROTATION           0092 E  SCANKEYPAD         0512
+SCORE              00E5 E  SCOREWRITELOOP     0D69    SECONDROMBASE      0C00
+SHIFTXORDRAWERBASE 04B3    SKBLOOP            0519    SKBSET             0527
+SKBSKIP            0529    SNL_INSERTLOOP     070C    SPEEDCOUNTER       0095 E
+STARTCODE          0400    STARTGAME          0610    STARTNEWLEVEL      0622
+STUDIO2BEEPTIMER   00CD E  STUDIO2SYNCTIMER   00CE E  SXD0               04DB
+SXD1               04DA    SXD2               04D9    SXD3               04D8
+SXD4               04D7    SXD5               04DF    SXD6               04C9
+SXD7               04C1    SXDXORWORD         04E9    TIMERSYNC          0D00
+VIDEOPAGE          0009 E  VISIMASK           0094 E  WRITEDISPLAYBYTE   0D9A
+XPLAYER            0090 E  YPLAYER            0091 E

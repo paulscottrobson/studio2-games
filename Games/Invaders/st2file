@@ -1,0 +1,8 @@
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR001
+TITLE:Space Invaders
+BINARY:invaders.st2
+SOURCE:invaders.asm.bin
+CODE:400,4
+

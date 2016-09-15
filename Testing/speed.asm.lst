@@ -1,0 +1,144 @@
+                        ;
+                        ;	speed test program
+                        ;
+
+0000  F8 00             	ldi 	start/256						; get away from P=0 to P=3, IRQ breaks P.
+0002  B3                	phi 	r3
+0003  F8 07             	ldi 	start%256
+0005  A3                	plo 	r3
+0006  D3                	sep 	r3
+
+0007                    start:
+                        	
+
+0007  F8 00             	ldi		DisplayRoutine / 256
+0009  B1                	phi 	r1
+000A  F8 68             	ldi 	DisplayRoutine % 256
+000C  A1                	plo 	r1
+
+000D  F8 01             	ldi 	1								; $100 is the screen
+000F  BB                	phi 	rb
+0010  F8 00             	ldi 	0
+0012  AB                	plo 	rb
+0013                    clear:
+0013  F8 00             	ldi 	0
+0015  5B                	str 	rb
+0016  1B                	inc 	rb
+0017  8B                	glo 	rb
+0018  3A 13             	bnz		clear
+001A  2B                	dec 	rb 								; after last INC rb is $200, set back to $1xx
+001B  8B                	glo	rb	
+001C  5B                	str 	rb
+
+001D  F8 02             	ldi 	2 								; set stack to $2FF
+001F  B2                	phi 	r2
+0020  F8 FF             	ldi 	$FF
+0022  A2                	plo 	r2
+
+0023  E2                	sex 	r2 								; screen on.
+0024  69                	inp  	1
+
+0025                    wait:
+0025  9B                	ghi 	rb 								; R4 = Screen address
+0026  B4                	phi 	r4 								; it binary counts with whole bytes representing a bit of the
+0027  F8 00             	ldi 	0 								; counter vertically down the screen
+0029  A4                	plo 	r4
+002A                    incloop:
+002A  04                	ldn 	r4 								; toggle all bits at current location
+002B  FB FF             	xri 	255
+002D  54                	str 	r4
+002E  3A 39             	bnz 	status 							; if non-zero update status
+0030  84                	glo 	r4 								; get the screen position
+0031  14                	inc 	r4
+0032  14                	inc 	r4
+0033  54                	str 	r4 								; store 2 further on - as a marker.
+0034  FC 08             	adi 	8 								; next screen line down
+0036  A4                	plo 	r4 								
+0037  30 2A             	br 		incloop 						; go back and increment that
+
+0039                    status:
+0039  F8 07             	ldi 	7								; read IN 4 to $407
+003B  A4                	plo 	r4
+003C  E4                	sex 	r4
+003D  6C                	inp 	4
+
+003E  F8 17             	ldi 	7+16							; check EF3 (key pressed)
+0040  A4                	plo		r4
+0041  F8 FF             	ldi 	255
+0043  36 47             	b3		isPressed
+0045  F8 81             	ldi  	129
+0047                    isPressed:
+0047  54                	str 	r4
+
+0048  F8 27             	ldi 	7+32 							; check EF4 (not in)
+004A  A4                	plo		r4
+004B  F8 FF             	ldi 	255
+004D  3F 51             	bn4		isPressed2
+004F  F8 81             	ldi  	129
+0051                    isPressed2:
+0051  54                	str 	r4
+
+
+0052  F8 50             	ldi 	8*10 							; use one of the counting bars to toggle Q
+0054  A4                	plo		r4
+0055  04                	ldn 	r4
+0056  7A                	req
+0057  32 5A             	bz 		missQ
+0059  7B                	seq
+005A                    missQ:
+
+005A  F8 37             	ldi 	7+48 							; check Q
+005C  A4                	plo		r4
+005D  F8 FF             	ldi 	255
+005F  31 63             	bq		isPressed3
+0061  F8 81             	ldi  	129
+0063                    isPressed3:
+0063  54                	str 	r4
+
+0064  30 25             	br 		wait
+
+0066                    EndInterrupt:
+0066  72                 	ldxa 							        ; RESTORE D
+0067  70                    ret 							        ; RESTORE XP
+
+0068                    DisplayRoutine:
+0068  22                	dec   	r2         						; SAVE X P & D ON STK (2)
+0069  78                	sav 									; (4)
+
+006A  22                	dec   	r2 								; (6)
+006B  52                	str 	r2 								; (8)
+
+006C  C4                	nop 									; (11)
+006D  C4                	nop 									; (14)
+006E  C4                	nop 									; (17)
+
+006F  9B                	ghi		rb 								; (19)
+0070  B0                	phi 	r0 								; (21)
+0071  F8 00             	ldi 	0 								; (23)
+0073  A0                	plo 	r0								; (25)
+0074                    DisplayContinue:
+0074  80                	glo 	r0 								; (27)
+0075  E2                 	sex  	r2 								; (29)
+
+0076  E2                 	sex 	r2
+0077  20                 	dec 	r0
+0078  A0                 	plo 	r0
+
+0079  E2                 	sex 	r2
+007A  20                 	dec 	r0
+007B  A0                 	plo 	r0
+
+007C  E2                 	sex 	r2
+007D  20                 	dec 	r0
+007E  A0                 	plo 	r0
+
+007F  3C 74              	bn1 	DisplayContinue
+0081  30 66              	br 		EndInterrupt
+
+
+00000 Total Error(s)
+
+CLEAR              0013    DISPLAYCONTINUE    0074    DISPLAYROUTINE     0068
+ENDINTERRUPT       0066    INCLOOP            002A    ISPRESSED          0047
+ISPRESSED2         0051    ISPRESSED3         0063    MISSQ              005A
+START              0007    STATUS             0039    WAIT               0025

@@ -1,0 +1,948 @@
+                        ; ****************************************************************************
+                        ; ****************************************************************************
+                        ;
+                        ;                        RCA Studio II Space Invaders
+                        ;
+                        ;                    Written by Paul Robson September 2000
+                        ;
+                        ; ****************************************************************************
+                        ; ****************************************************************************
+                        ;
+                        ;       Register usage :
+                        ;
+                        ;       R0 R8 R9 RB.0   [Used in Interrupt Routine]
+                        ;       R1              [Interrupt Vector]
+                        ;       R2              [Stack Pointer]
+                        ;       RE              Points to video RAM at $900
+                        ;       RF              Points to program RAM at $800
+                        ;       R5              Random Number Generator
+                        ;
+      = 0000            IOffset = $00                           ; Invader Offset ($800)
+      = 0001            POffset = $01                           ; Player offset ($801)
+      = 0002            ICount  = $02                           ; Invader Count ($802)
+      = 0003            IStatus = $03                           ; Invader Status ($803)
+      = 0004            IBase   = $04                           ; Bottom Scrolling Line ($804)
+      = 0005            RSeed   = $05                           ; Random Seed ($805)
+      = 000B            PScore  = $0B                           ; Player Score ($80B...$80E)
+      = 000F            PLives  = $0F                           ; Player lives ($80)
+      = 0010            FButton = $10                           ; Fire Button ($810)
+                        ;
+      = 0020            MTable  = $20                           ; Missile table ($20-$27, Offset,Mask)
+                                                                ; 4 pairs of 2 byte data. Mask=0 => none
+
+      = 0003            Lives  =  3                             ; Number of lives
+      = 0002            BaseSpd = 2                             ; Speed of base
+
+      = 0010            MCount =  8*2                           ; Total number of missiles, x 2
+
+      = 00CD            SndTmr =  $CD                           ; $8CD is the Beep Timer
+      = 00CE            TmrInv =  $CE                           ; Use $8CE as invader timer
+      = 00CF            TmrPly =  $CF                           ; Use $8CF as player timer
+
+      = 0000            ISLeft = 0                              ; Invader Status Mode (how it is moving)
+      = 0001            ISDownLeft = 1
+      = 0002            ISRight = 2
+      = 0003            ISDownRight = 3
+
+0000                            .include "1802.inc"
+      = 0000            r0      = 0
+      = 0001            r1      = 1
+      = 0002            r2      = 2
+      = 0003            r3      = 3
+      = 0004            r4      = 4
+      = 0005            r5      = 5
+      = 0006            r6      = 6
+      = 0007            r7      = 7
+      = 0008            r8      = 8
+      = 0009            r9      = 9
+      = 000A            ra      = 10
+      = 000B            rb      = 11
+      = 000C            rc      = 12
+      = 000D            rd      = 13
+      = 000E            re      = 14
+      = 000F            rf      = 15
+
+0400                            .org    400h                    ; where RCA Studio II games start
+0400  045D                      .db     >(Start),<(Start)  ; Internal Code call to Machine Code
+
+                        ; ****************************************************************************
+                        ;                               Invader Graphics
+                        ;
+                        ;       .x.....x!.....x..!...x....!             ; $41 $04 $10
+                        ;       xxx...xx!x...xxx.!..xxx...!             ; $E3 $8E $38
+                        ; ****************************************************************************
+
+0402                    InvaderGr:
+0402  388EE3                    .db     $38,$8E,$E3             ; bytes are right to left bottom to top
+0405  100441                    .db     $10,$04,$41             ; this corresponds to the above graphic
+0408  FF                        .db     $FF                     ; this means "miss a line"
+
+0409  288AA2                    .db     $28,$8A,$A2
+040C  100441                    .db     $10,$04,$41
+040F  FF                        .db     $FF
+
+0410  100441                    .db     $10,$04,$41
+0413  388EE3                    .db     $38,$8E,$E3
+0416  FF                        .db     $FF
+
+0417  100441                    .db     $10,$04,$41
+041A  288AA2                    .db     $28,$8A,$A2
+
+041D  00                        .db     0                       ; end of the invaders
+
+                        ; ****************************************************************************
+                        ;     Scroll line at RE left 1 pixel. On exit RE points to previous line
+                        ; ****************************************************************************
+
+041E                    ScrollLeft:
+041E  1E                        inc     re              ; get next byte
+041F  0E                        ldn     re
+0420  2E                        dec     re
+0421  FE                        shl                     ; shift into carry
+0422  0E                        ldn     re              ; read original byte
+0423  7E                        shlc                    ; shift it left, shift in new.
+0424  5E                        str     re              ; write back
+0425  1E                        inc     re              ; next
+0426  8E                        glo     re
+0427  FA 07                     ani     $07
+0429  3A 1E                     bnz     ScrollLeft      ; do complete line
+042B  2E                        dec     re              ; zero right most pixel
+042C  0E                        ldn     re
+042D  FA FE                     ani     $FE
+042F  5E                        str     re
+0430  8E                        glo     re              ; previous line
+0431  FF 0F                     smi     16-1
+0433  AE                        plo     re
+0434  D3                        sep     r3              ; return
+0435  30 1E                     br      ScrollLeft
+
+
+                        ; ****************************************************************************
+                        ;     Scroll line at RE right 1 pixel. On exit RE points to previous line
+                        ; ****************************************************************************
+
+0437                    ScrollRight:
+0437  FC 00                     adi     $00             ; clear DF
+0439                    _SRight0:
+0439  0E                        ldn     re              ; read byte
+043A  76                        shrc                    ; shift it right, including old carry
+043B  5E                        str     re              ; save it, old carry goes through
+043C  1E                        inc     re              ; next byte
+043D  8E                        glo     re
+043E  FA 07                     ani     $07             ; done whole row ?
+0440  3A 39                     bnz     _SRight0
+0442  2E                        dec     re
+0443  8E                        glo     re              ; previous line
+0444  FF 0F                     smi     15
+0446  AE                        plo     re
+0447  D3                        sep     r3              ; return
+0448  30 37                     br      ScrollRight
+
+                        ; ****************************************************************************
+                        ;        XORPlot all the missiles. This is done to move the invaders
+                        ; ****************************************************************************
+
+044A                    XORMissiles:
+044A  F8 20                     ldi     MTable                  ; RF points to missiles
+044C  AF                        plo     rf
+044D  EE                        sex     re
+044E  4F                _XOR1:  lda     rf                      ; Read offset
+044F  AE                        plo     re                      ; RE now points to video byte
+0450  4F                        lda     rf                      ; Read bitmask
+0451  32 55                     bz      _XOR2
+0453  F3                        xor                             ; toggle bit
+0454  5E                        str     re                      ; update
+0455  8F                _XOR2:  glo     rf                      ; done the lot ?
+0456  FA 0F                     ani     MCount-1
+0458  3A 4E                     bnz     _XOR1                   ; if not, do all 4 possibles
+045A  D3                        sep     r3                      ; return
+045B  30 4A                     br      XORMissiles             ; loop back for next call
+
+                        ; ****************************************************************************
+                        ;
+                        ;                           Start of main program.
+                        ;
+                        ; ****************************************************************************
+
+045D  F8 08             Start:  ldi     $08                     ; access data memory
+045F  BF                        phi     rf
+0460  F8 0F                     ldi     PLives
+0462  AF                        plo     rf
+0463  F8 03                     ldi     Lives                   ; set lives to 3
+0465  EF                        sex     rf
+0466  73                        stxd
+0467  91                        ghi     r1                      ; zero four score bytes
+0468  73                        stxd
+0469  73                        stxd
+046A  73                        stxd
+046B  73                        stxd
+
+                        ; ****************************************************************************
+                        ;                              Start a new level
+                        ; ****************************************************************************
+
+046C                    NewLevel:
+
+                        ; ****************************************************************************
+                        ;                               Clear the screen
+                        ; ****************************************************************************
+
+046C  91                        ghi     r1                      ; D = 0
+046D  AE                        plo     re
+046E  EE                        sex     re                      ; use RF as index register
+046F  F8 09             _Clear: ldi     $09                     ; RF = $0900
+0471  BE                        phi     re                      ; initialise RE.1, stays $09
+0472  91                        ghi     r1                      ; Write zero there
+0473  73                        stxd
+0474  8E                        glo     re
+0475  3A 6F                     bnz     _Clear
+
+                        ; ****************************************************************************
+                        ;                       Draw All Invaders in Start Position
+                        ; ****************************************************************************
+
+0477  F8 5E                     ldi     11*8+6                  ; base position of invaders in RF
+0479  AE                        plo     re
+047A  F8 04                     ldi     InvaderGr / 256         ; set RE to point to the graphic data
+047C  BC                        phi     rc
+047D  F8 02                     ldi     InvaderGr & 255
+
+047F                    _HalfLine:
+047F  AC                        plo     rc
+0480  AD                        plo     rd                      ; save the copy of it.
+0481  4C                        lda     rc                      ; copy three bytes
+0482  73                        stxd
+0483  4C                        lda     rc
+0484  73                        stxd
+0485  4C                        lda     rc
+0486  73                        stxd
+0487  8E                        glo     re                      ; get the pointer. if LSBit is
+0488  F6                        shr                             ; non-zero, go back.
+0489  8D                        glo     rd                      ; and restore the pointer
+048A  33 7F                     bdf     _HalfLine
+048C  2E                        dec     re                      ; fix for next line
+048D  2E                        dec     re
+
+048E  0C                        ldn     rc                      ; look at next byte
+048F  32 9D                     bz      _EndDrawInv             ; done if zero
+0491  FB FF                     xri     $FF                     ; check if $FF
+0493  3A 9A                     bnz     _NoSkip
+0495  1C                        inc     rc                      ; if so, skip byte and go up a line
+0496  8E                        glo     re
+0497  FF 08                     smi     8
+0499  AE                        plo     re
+049A                    _NoSkip:                                ; go back
+049A  8C                        glo     rc                      ; prepare for PLO RE
+049B  30 7F                     br      _HalfLine
+049D                    _EndDrawInv:
+
+                        ; ****************************************************************************
+                        ;                               Draw Shields
+                        ; ****************************************************************************
+
+049D  F8 09                     ldi     9                       ; Fix RE.1 again
+049F  BE                        phi     re
+04A0  F8 E7                     ldi     28*8+7                  ; RF point to shield area
+04A2  AE                        plo     re
+04A3                    _ShieldLoop:
+04A3  F8 F0                     ldi     $F0                     ; draw a shield
+04A5  73                        stxd
+04A6  F8 0F                     ldi     $0F
+04A8  73                        stxd
+04A9  8E                        glo     re
+04AA  FB C7                     xri     24*8+7                  ; do four rows
+04AC  3A A3                     bnz     _ShieldLoop
+
+                        ; ****************************************************************************
+                        ;                               Draw Player
+                        ; ****************************************************************************
+
+04AE  F8 F0                     ldi     30*8                    ; draw the player
+04B0  AE                        plo     re
+04B1  F8 70                     ldi     $70
+04B3  5E                        str     re
+04B4  F8 F8                     ldi     31*8
+04B6  AE                        plo     re
+04B7  F8 50                     ldi     $50
+04B9  5E                        str     re
+
+                        ; ****************************************************************************
+                        ;                               Reset data areas
+                        ; ****************************************************************************
+
+04BA  91                        ghi     r1                      ; set up variables (start at $800)
+04BB  AF                        plo     rf
+
+04BC  F8 09                     ldi     9                       ; set invader offset ($800)
+04BE  5F                        str     rf
+04BF  1F                        inc     rf
+04C0  F8 02                     ldi     2                       ; set player offset ($801)
+04C2  5F                        str     rf
+04C3  1F                        inc     rf
+04C4  F8 20                     ldi     8*4                     ; set invader count ($802)
+04C6  5F                        str     rf
+04C7  1F                        inc     rf
+04C8  F8 02                     ldi     ISRight                 ; set invader status ($803)
+04CA  5F                        str     rf
+04CB  1F                        inc     rf
+04CC  F8 60                     ldi     12*8                    ; set bottom scrolling line ($804)
+04CE  5F                        str     rf
+
+04CF  F8 20                     ldi     MTable                  ; erase all missiles
+04D1  AF                        plo     rf
+04D2  91                _MClear:ghi     r1                      ; fill the missile table with all zeroes
+04D3  5F                        str     rf
+04D4  1F                        inc     rf
+04D5  8F                        glo     rf
+04D6  FA 0F                     ani     MCount-1
+04D8  3A D2                     bnz     _MClear
+04DA  30 E0                     br      _SetMainTmr
+
+                        ; ****************************************************************************
+                        ;
+                        ;                                 MAIN LOOP
+                        ;
+                        ; ****************************************************************************
+
+04DC                    MainLoop:
+04DC  89                        glo     r9                      ; wait for loop to be >= 0
+04DD  FE                        shl
+04DE  33 DC                     bdf     MainLoop
+04E0                    _SetMainTmr:
+04E0  F8 FE                     ldi     $FE
+04E2  A9                        plo     r9
+
+                        ; ****************************************************************************
+                        ;                               Move Invaders
+                        ; ****************************************************************************
+
+04E3                    MoveInvaders:
+04E3  F8 02                     ldi     ICount                  ; read number of invaders
+04E5  AF                        plo     rf
+04E6  0F                        ldn     rf
+04E7  BB                        phi     rb                      ; save in RB.1
+
+04E8  F8 CE                     ldi     TmrInv                  ; check invader timer is zero
+04EA  AF                        plo     rf
+04EB  0F                        ldn     rf
+04EC  CA 0586                   lbnz    NoMove
+
+04EF  9B                        ghi     rb                      ; use number of invaders as speed
+04F0  FC 08                     adi     8
+04F2  5F                        str     rf
+
+04F3  F8 CD                     ldi     SndTmr                  ; short "invaders moving" beep
+04F5  AF                        plo     rf
+04F6  F8 03                     ldi     3
+04F8  5F                        str     rf
+
+04F9  F8 4A                     ldi     <(XORMissiles)
+04FB  AA                        plo     ra
+04FC  F8 04                     ldi     >(XORMissiles)
+04FE  BA                        phi     ra
+04FF  DA                        sep     ra
+
+0500  F8 03                     ldi     IStatus                 ; get current status, put in RB.1
+0502  AF                        plo     rf
+0503  4F                        lda     rf                      ; read it, point RF to IBase
+0504  BB                        phi     rb
+
+0505  9B                        ghi     rb                      ; look at current status
+0506  F6                        shr                             ; shift LSB right into DF
+0507  33 52                     bdf      _MoveDown
+0509  32 15                     bz       _MoveLeft               ; if zero then moving left
+
+050B                    _MoveRight:
+050B  F8 37                     ldi     <(ScrollRight)        ; set up to move right
+050D  A4                        plo     r4
+050E  F8 04                     ldi     >(ScrollRight)
+0510  B4                        phi     r4
+0511  F8 17                     ldi     $17                     ; base pointer for flip test
+0513  30 1D                     br      _HMoveEnd
+
+0515                    _MoveLeft:
+0515  F8 1E                     ldi     <(ScrollLeft)         ; set up to move left
+0517  A4                        plo     r4
+0518  F8 04                     ldi     >(ScrollLeft)
+051A  B4                        phi     r4
+051B  F8 10                     ldi     $10
+051D                    _HMoveEnd:
+051D  AD                        plo     rd                      ; save base pointer in RD
+
+051E  F8 00                     ldi     IOffset                 ; point RF to offset : adjust IOffset
+0520  AF                        plo     rf
+0521  EF                        sex     rf                      ; use as index
+0522  9B                        ghi     rb                      ; get value
+0523  FA 02                     ani     $02                     ; 0 (left) 2 (right)
+0525  FF 01                     smi     $01                     ; -1 (left) 1 (right)
+0527  F4                        add                             ; add to IOffset
+0528  5F                        str     rf                      ; save it back
+
+0529  F8 04                     ldi     IBase                   ; point RF to base value
+052B  AF                        plo     rf
+052C  0F                        ldn     rf                      ; get base for scrolling
+052D  AE                        plo     re                      ; set RE = scroll point
+052E  9E                        ghi     re
+052F  BD                        phi     rd                      ; RD contains the test value
+
+0530                    _HScroll:
+0530  D4                        sep     r4                      ; scroll a line
+0531  8E                        glo     re                      ; reached the top (not top 2 lines)
+0532  FA F0                     ani     $F0
+0534  FB F0                     xri     $F0
+0536  3A 30                     bnz    _HScroll
+
+0538                    _TestReverse:
+0538  91                        ghi     r1                      ; now test for the edge (R1.H = 0)
+0539  ED                        sex     rd                      ; use RD which is $910 or $917
+053A                    _TestOr:
+053A  F1                        or                              ; OR the video byte
+053B  AE                        plo     re                      ; save in RE.0
+053C  8D                        glo     rd                      ; advance RD.0 by 8
+053D  FC 08                     adi     $08
+053F  AD                        plo     rd
+0540  8E                        glo     re                      ; restore RE.0
+0541  3B 3A                     bnf     _TestOr                 ; go back if not finished
+
+0543  8D                        glo     rd                      ; look at < byte
+0544  FA 01                     ani     $01                     ; if right this will be '1'
+0546  3A 4C                     bnz     _UseBit0
+0548  8E                        glo     re                      ; shift bit 7 of RE.0 into bit 0
+0549  7E                        shlc
+054A  7E                        shlc
+054B  AE                        plo     re
+054C                    _UseBit0:
+054C  8E                        glo     re                      ; look at the result
+054D  F6                        shr                             ; shift bit 0 into carry
+054E  3B 85                     bnf     ExitMoveInvaders        ; exit if zero
+0550  30 7C                     br      NextState
+
+0552                    _MoveDown:
+0552  0F                        ldn     rf                      ; read the base value
+0553  AE                        plo     re                      ; put in RE
+0554  EE                        sex     re                      ; use RE as an index
+0555  4E                        lda     re                      ; or all 8 bytes of the line together
+0556  F1                        or                              ; +1
+0557  60                        irx
+0558  F1                        or                              ; +2
+0559  60                        irx
+055A  F1                        or                              ; +3
+055B  60                        irx
+055C  F1                        or                              ; +4
+055D  60                        irx
+055E  F1                        or                              ; +5
+055F  60                        irx
+0560  F1                        or                              ; +6
+0561  60                        irx
+0562  F1                        or                              ; +7
+0563  32 6E                     bz      _NoBShift               ; if non-zero the base shift is required
+
+0565  0F                        ldn     rf                      ; if at the bottom, that's it.
+0566  FB E0                     xri     $E0
+0568  32 7C                     bz      NextState
+056A  0F                        ldn     rf                      ; add 8 to the base value
+056B  FC 08                     adi     $08
+056D  5F                        str     rf
+
+056E                    _NoBShift:
+056E  0F                        ldn     rf                      ; RE points to the current line
+056F  AE                        plo     re                      ; RD points to the previous line
+0570  FC 08                     adi     8
+0572  AD                        plo     rd
+0573  9D                        ghi     rd
+0574  BD                        phi     rd
+0575                    _ScrollUp:                              ; now scroll by copying RD->RE
+0575  2D                        dec     rd
+0576  2E                        dec     re
+0577  0E                        ldn     re
+0578  5D                        str     rd
+0579  8E                        glo     re
+057A  3A 75                     bnz     _ScrollUp
+
+                        ; ****************************************************************************
+                        ;                             Go to next state
+                        ; ****************************************************************************
+
+057C                    NextState:
+057C  F8 03                     ldi     IStatus                 ; point RF to status
+057E  AF                        plo     rf
+057F  0F                        ldn     rf                      ; advance state counter
+0580  FC 01                     adi     $01
+0582  FA 03                     ani     $03
+0584  5F                        str     rf
+
+0585                    ExitMoveInvaders:
+0585  DA                        sep     ra
+0586                    NoMove:
+
+                        ; ****************************************************************************
+                        ;                               Move the Base
+                        ; ****************************************************************************
+
+0586                    MoveBase:
+0586  F8 CF                     ldi     TmrPly                  ; check timer
+0588  AF                        plo     rf
+0589  0F                        ldn     rf                      ; skip if non-zero
+058A  3A C1                     bnz     ExitMoveBase
+058C  F8 02                     ldi     BaseSpd                 ; reset counter
+058E  5F                        str     rf
+058F  F8 01                     ldi     POffset                 ; make RF point to the offset
+0591  AF                        plo     rf
+
+0592  E3                        sex     r3                      ; index = program
+0593  62                        out     2                       ; select key 4
+0594  04                        .db     4
+0595  36 9D                     b3      _Left
+0597  62                        out     2                       ; select key 6
+0598  06                        .db     6
+0599  36 AC                     b3      _Right
+059B  30 C1             _ExitMB:br      ExitMoveBase
+
+059D  0F                _Left:  ldn     rf                      ; read player offset
+059E  FB 02                     xri     2                       ; check in range
+05A0  32 9B                     bz      _ExitMB
+05A2  F8 1E                     ldi     <(ScrollLeft)         ; set up to move left
+05A4  A4                        plo     r4
+05A5  F8 04                     ldi     >(ScrollLeft)
+05A7  B4                        phi     r4
+05A8  F8 FF                     ldi     $FF                     ; set -ve movement offset
+05AA  30 B9                     br      _MovePlayer
+
+05AC  0F                _Right: ldn     rf                      ; read player offset
+05AD  FB 3D                     xri     61                      ; check in range
+05AF  32 9B                     bz      _ExitMB
+05B1  F8 37                     ldi     <(ScrollRight)        ; set up to move right
+05B3  A4                        plo     r4
+05B4  F8 04                     ldi     >(ScrollRight)
+05B6  B4                        phi     r4
+05B7  F8 01                     ldi     $01
+05B9                    _MovePlayer:
+05B9  EF                        sex     rf                      ; add movement offset to position
+05BA  F4                        add
+05BB  5F                        str     rf
+05BC  F8 F8                     ldi     $F8
+05BE  AE                        plo     re
+05BF  D4                        sep     r4                      ; scroll two lines
+05C0  D4                        sep     r4
+05C1                    ExitMoveBase:
+
+                        ; ****************************************************************************
+                        ;                             Move missiles
+                        ; ****************************************************************************
+
+05C1  9F                        ghi     rf                      ; Make RC point to RAM
+05C2  BC                        phi     rc
+05C3  F8 20                     ldi     MTable                  ; RF Points to the invader table
+05C5  AF                        plo     rf
+
+05C6  4F                MILoop: lda     rf                      ; Read position
+05C7  AE                        plo     re                      ; Save in RE.0 [Video Byte]
+05C8  0F                        ldn     rf                      ; Read Mask
+05C9  BB                        phi     rb                      ; Save in RB.1 [Mask Bit]
+05CA  2F                        dec     rf                      ; Fix RF
+05CB  EE                        sex     re                      ; Use video as index
+05CC  32 D2                     bz      _MNoErase               ; don't require erasing
+05CE  FB FF                     xri     $FF                     ; make an AND mask
+05D0  F2                        and                             ; and with screen
+05D1  5E                        str     re                      ; write it back
+05D2                    _MNoErase:
+05D2  9B                        ghi     rb                      ; look at mask
+05D3  C2 060E                   lbz     _MCheckNew              ; if zero, check for new missile
+
+05D6                    _MMoveDown:
+05D6  8E                        glo     re                      ; move it down
+05D7  FC 08                     adi     8
+05D9  AE                        plo     re
+05DA  8F                        glo     rf                      ; get missile number
+05DB  FA 0F                     ani     $0F                     ; now 0 if player missile
+05DD  3A E3                     bnz     _NotIMissile
+05DF  8E                        glo     re                      ; if so, it is going up.
+05E0  FF 10                     smi     16
+05E2  AE                        plo     re
+05E3                    _NotIMissile:
+05E3  8E                        glo     re                      ; check if reached top line
+05E4  FA F8                     ani     $F8
+05E6  32 F6                     bz      MIKill                  ; if reached the top line, die
+
+05E8  9B                        ghi     rb                      ; get mask
+05E9  F2                        and                             ; and with screen
+05EA  CA 068F                   lbnz    _MICollide              ; if non zero, a collision
+
+05ED  8E                        glo     re                      ; check if reached line at $9F0
+05EE  FA F8                     ani     $F8
+05F0  FB F0                     xri     $F0
+05F2  32 F6                     bz      MIKill                  ; if so, kill it (missile missed)
+
+05F4  30 F8                     br      MINext
+
+05F6  91                MIKill: ghi     r1                      ; zero the mask
+05F7  BB                        phi     rb
+05F8  EE                MINext: sex     re                      ; video as index
+05F9  9B                        ghi     rb                      ; look at mask
+05FA  C2 05FF                   lbz    _MNoDraw
+05FD  F1                        or                              ; or with screen
+05FE  5E                        str     re                      ; write back
+05FF                    _MNoDraw:
+05FF  8E                        glo     re                      ; write it back
+0600  5F                        str     rf
+0601  1F                        inc     rf                      ; point at mask byte
+0602  9B                        ghi     rb
+0603  5F                        str     rf
+0604  1F                        inc     rf                      ; point at next
+
+0605  8F                        glo     rf                      ; reached the end ?
+0606  FA 0F                     ani     (MCount-1)
+0608  CA 05C6                   lbnz    MILoop                  ; go and do all of them
+
+060B  C0 04DC                   lbr      MainLoop
+
+                        ; ****************************************************************************
+                        ;          Come here when the mask is zero : check for new missile
+                        ; ****************************************************************************
+
+060E                    _MCheckNew:
+060E  8F                        glo     rf                      ; look at missile
+060F  FA 0F                     ani     $0F                     ; check if player
+0611  32 63                     bz      _MCheckPlyr             ; if so, check for fire etc.
+
+0613  F8 00                     ldi     IOffset                 ; read the invaders position
+0615  AC                        plo     rc
+0616  0C                        ldn     rc
+0617  AA                        plo     ra                      ; save in RA.0
+
+0618  F8 05                     ldi     RSeed
+061A  AC                        plo     rc
+061B  0C                        ldn     rc
+061C  FC 07                     adi     7
+061E  5C                        str     rc
+061F  91                        ghi     r1                      ; point to $00nn
+0620  B5                        phi     r5
+0621  8A                        glo     ra
+0622  E5                        sex     r5
+0623  F3                        xor
+0624  15                        inc     r5
+0625  EC                        sex     rc
+0626  F3                        xor
+
+0627  BA                        phi     ra                      ; save number
+0628  FA 1F                     ani     $1F                     ; only fire one in 8 times
+062A  CA 05F6                   lbnz     MIKill
+
+062D  9A                        ghi     ra                      ; upper 3 bits offset position
+062E  F6                        shr                             ; put them in the 3 <est bits
+062F  F6                        shr
+0630  F6                        shr
+0631  F6                        shr
+0632  F6                        shr
+0633  FE                        shl                             ; x 2 (we actually want x 6 in total)
+0634  22                        dec     r2                      ; save in stack space
+0635  52                        str     r2
+0636  E2                        sex     r2                      ; access the stack
+0637  8A                        glo     ra                      ; add to the base position
+0638  F4                        add                             ; 3 lots of x2 = x6
+0639  F4                        add
+063A  F4                        add
+063B  AA                        plo     ra                      ; update the base position
+063C  12                        inc     r2                      ; fix the stack back
+
+063D  F8 04                     ldi     IBase                   ; point RC to the base
+063F  AC                        plo     rc
+0640  8A                        glo     ra                      ; get the position
+0641  F6                        shr                             ; divide it by 8
+0642  F6                        shr
+0643  F6                        shr
+0644  EC                        sex     rc                      ; add the base position to it
+0645  F4                        add
+0646  FC 08                     adi     8                       ; add 8 more to it
+0648  AE                        plo     re                      ; RE now points to it
+
+0649  8A                        glo     ra                      ; use 3 <er bits as an index
+064A  F9 F8                     ori     $F8                     ; into the table at $7F8 to get
+064C  AA                        plo     ra                      ; the mask out.
+064D  F8 07                     ldi     $07
+064F  BA                        phi     ra
+0650  0A                        ldn     ra                      ; read the mask
+0651  BB                        phi     rb                      ; put in RB.H
+0652  EE                        sex     re
+0653  9B                _MoveUp:ghi     rb                      ; read mask
+0654  F2                        and                             ; and with screen
+0655  CA 05D6                   lbnz    _MMoveDown              ; if non-zero move it down and continue
+0658  8E                        glo     re                      ; subtract 8 (move up one square)
+0659  FF 08                     smi     8
+065B  AE                        plo     re
+065C  FA F8                     ani     $F8                     ; reached top line ?
+065E  3A 53                     bnz     _MoveUp
+0660  C0 05F6                   lbr      MIKill                 ; if so, kill it. There was no baddie
+                                                                ; in that slot.
+0663                    _MCheckPlyr:
+0663  F8 10                     ldi     FButton                 ; point RF to fire button
+0665  AC                        plo     rc
+0666  E3                        sex     r3                      ; X = P
+0667  62                        out     2                       ; test key 0
+0668  00                        .db     0
+0669  0C                        ldn     rc                      ; read fire
+066A  FE                        shl                             ; shift old left
+066B  3F 6F                     bn4     _NoFirePressed
+066D  F9 01                     ori     1                       ; if fire pressed LSB = 1
+066F                    _NoFirePressed:
+066F  FA 03                     ani     3                       ; only interested in last two states
+0671  5C                        str     rc                      ; write back
+0672  FB 01                     xri     1                       ; if current 1, last 0
+0674  CA 05F8                   lbnz    MINext                  ; then drop through to fire
+
+0677  F8 01                     ldi     POffset                 ; point RC to player position
+0679  AC                        plo     rc
+067A  0C                        ldn     rc                      ; read it
+067B  F6                        shr                             ; divide by 8
+067C  F6                        shr
+067D  F6                        shr
+067E  FA 07                     ani     $07
+0680  FC E8                     adi     $E8                     ; work out initial position
+0682  AE                        plo     re
+0683  0C                        ldn     rc                      ; get it again
+0684  F9 F8                     ori     $F8                     ; pointer into table at $7F8
+0686  AC                        plo     rc
+0687  F8 07                     ldi     $07
+0689  BC                        phi     rc
+068A  0C                        ldn     rc                      ; read the pixel position
+068B  BB                        phi     rb                      ; put into mask position
+068C  C0 05F8                   lbr     MINext
+
+                        ; ****************************************************************************
+                        ;                              Check for collision
+                        ; ****************************************************************************
+
+068F                    _MICollide:
+068F  8F                        glo     rf                      ; check if player missile collision
+0690  FA 0F                     ani     $0F
+0692  32 BC                     bz      _PMCollide
+
+0694  8E                        glo     re                      ; check if player-inv missile collision
+0695  FA F0                     ani     $F0
+0697  FB F0                     xri     $F0
+                        ;;;;    lbr     MIKill                  ; uncomment for infinite lives
+0699  32 A4                     bz      _KillPlayer
+
+069B                    _HitShield:
+069B  9B                        ghi     rb                      ; if not, clear the relevant pixel
+069C  FB FF                     xri     $FF                     ; (collision with shields or perhaps
+069E  EE                        sex     re                      ; use video as index
+069F  F2                        and                             ;  the player bullet) and kill it.
+06A0  5E                        str     re
+06A1  C0 05F6                   lbr     MIKill
+
+06A4                    _KillPlayer:
+06A4  F8 80                     ldi     128                     ; this forces a delay of about 2.5secs
+06A6  A9                        plo     r9
+06A7  9F                        ghi     rf                      ; point RC at the RAM
+06A8  BC                        phi     rc
+06A9  F8 CD                     ldi     SndTmr                  ; long beep
+06AB  AC                        plo     rc
+06AC  F8 3C                     ldi     60
+06AE  5C                        str     rc
+06AF  F8 0F                     ldi     PLives                  ; point RC at lives
+06B1  AC                        plo     rc
+06B2  0C                        ldn     rc                      ; decrement lives
+06B3  FF 01                     smi     1
+06B5  5C                        str     rc
+06B6  C2 0738                   lbz     _EndGame
+06B9  C0 05F6                   lbr     MIKill
+
+06BC                    _PMCollide:
+06BC  8E                        glo     re                      ; get the address
+06BD  FC 38                     adi     7*8                     ; check shield hit ?
+06BF  33 9B                     bdf     _HitShield              ; if in shield region pop shield
+
+06C1  9F                        ghi     rf                      ; set up RC to point to missile table
+06C2  BC                        phi     rc
+06C3  F8 22                     ldi     MTable+2                ; missing out the player missile
+06C5  AC                        plo     rc
+06C6  EC                        sex     rc                      ; use that as the index register
+06C7                    _CheckHitMissile:
+06C7  8E                        glo     re                      ; first compare the position
+06C8  F3                        xor
+06C9  3A D2                     bnz     _CHMNext
+06CB  1C                        inc     rc                      ; second compare the mask
+06CC  9B                        ghi     rb
+06CD  F3                        xor
+06CE  C2 05F6                   lbz     MIKill                  ; if it is equal to the mask, kill it.
+06D1  2C                        dec     rc
+06D2                    _CHMNext:
+06D2  1C                        inc     rc                      ; move to the next one
+06D3  1C                        inc     rc
+06D4  8C                        glo     rc
+06D5  FA 0F                     ani     (MCount-1)              ; do for all the enemy missiles
+06D7  3A C7                     bnz     _CheckHitMissile
+
+06D9  8E                        glo     re                      ; down one row
+06DA  FC 08                     adi     8
+06DC  AE                        plo     re
+06DD  F8 02                     ldi     2                       ; move back two pixels
+06DF  AC                        plo     rc
+06E0                    _ShiftRight:
+06E0  9B                        ghi     rb                      ; shift mask right
+06E1  F6                        shr
+06E2  3B E7                     bnf     _NoCBack
+06E4  1E                        inc     re                      ; if carry out then next cell
+06E5  F8 80                     ldi     $80                     ; mask = $80
+06E7                    _NoCBack:
+06E7  BB                        phi     rb
+06E8  2C                        dec     rc
+06E9  8C                        glo     rc
+06EA  3A E0                     bnz     _ShiftRight
+
+06EC  F8 03                     ldi     3                       ; do 3 rows
+06EE  AA                        plo     ra
+06EF  8E                        glo     re                      ; r7.0 := RE.0
+06F0  A7                        plo     r7
+06F1  9B                        ghi     rb                      ; r7.1 := RB.1
+06F2  B7                        phi     r7
+
+06F3                    _NextLine:
+06F3  97                        ghi     r7                      ; copy the mask back
+06F4  BB                        phi     rb
+06F5  F8 05                     ldi     5                       ; erase and go left 5 times
+06F7  AC                        plo     rc
+06F8                    _ShiftLeft:
+06F8  9B                        ghi     rb                      ; erase the pixel
+06F9  EE                        sex     re
+06FA  FB FF                     xri     $FF
+06FC  F2                        and
+06FD  5E                        str     re
+06FE  9B                        ghi     rb                      ; shift mask left
+06FF  FE                        shl
+0700  3B 05                     bnf     _NoCForward             ; if carry out
+0702  2E                        dec     re                      ; previous cell
+0703  F8 01                     ldi     $01                     ; reset the mask
+0705                    _NoCForward:
+0705  BB                        phi     rb
+0706  2C                        dec     rc
+0707  8C                        glo     rc
+0708  CA 06F8                   lbnz    _ShiftLeft
+070B  87                        glo     r7                      ; get video address
+070C  FF 08                     smi     8
+070E  A7                        plo     r7                      ; update both working and fixed
+070F  AE                        plo     re
+0710  2A                        dec     ra                      ; do this for 3 lines up
+0711  8A                        glo     ra
+0712  CA 06F3                   lbnz    _NextLine
+
+0715  9F                        ghi     rf                      ; RC points to ICount
+0716  BC                        phi     rc
+0717  F8 CD                     ldi     SndTmr                  ; Beep
+0719  AC                        plo     rc
+071A  F8 0C                     ldi     12
+071C  5C                        str     rc
+071D  F8 02                     ldi     ICount
+071F  AC                        plo     rc
+0720  0C                        ldn     rc                      ; decrement invader count
+0721  FF 01                     smi     1
+0723  5C                        str     rc
+0724  C2 046C                   lbz     NewLevel                ; if zero then new level (1 fewer on score)
+
+0727  F8 0E                     ldi     PScore+3                ; Point RC to the score
+0729  AC                        plo     rc
+072A                    _IncScore:
+072A  0C                        ldn     rc                      ; read next digit
+072B  FC 01                     adi     1                       ; and increment by 1
+072D  5C                        str     rc
+072E  FB 0A                     xri     10                      ; reached 10
+0730  CA 05F6                   lbnz    MIKill                  ; else kill the invader, continue
+0733  91                        ghi     r1                      ; zero that one
+0734  5C                        str     rc
+0735  2C                        dec     rc                      ; do previous digit
+0736  30 2A                     br      _IncScore
+
+                        ; ****************************************************************************
+                        ;                               Game Over
+                        ; ****************************************************************************
+
+      = 0210            NumIndexTab =   $0210                   ; Table of LSB of digit addresses
+
+0738                    _EndGame:
+0738  91                        ghi     r1                      ; D = 0
+0739  AE                        plo     re
+073A  EE                        sex     re                      ; use RF as index register
+073B  F8 09             _Clear2:ldi     $09                     ; RF = $0900
+073D  BE                        phi     re                      ; initialise RE.1, stays $09
+073E  91                        ghi     r1                      ; Write zero there
+073F  73                        stxd
+0740  8E                        glo     re
+0741  3A 3B                     bnz     _Clear2
+0743  F8 42                     ldi     8*8+2                   ; Position score graphic
+0745  AE                        plo     re
+0746  F8 0B                     ldi     PScore                  ; Point RF to the score
+0748  AF                        plo     rf
+0749                    _ScoreLoop:
+0749  4F                        lda     rf                      ; read next score digit
+074A  FC 10                     adi     <(NumIndexTab)        ; point into table
+074C  AC                        plo     rc
+074D  F8 02                     ldi     >(NumIndexTab)
+074F  BC                        phi     rc
+0750  0C                        ldn     rc                      ; read the offset
+0751  AC                        plo     rc                      ; RC now points to the graphic data
+0752  F8 05                     ldi     5                       ; do 5 lines
+0754  AD                        plo     rd
+0755                    _DigitLoop:
+0755  4C                        lda     rc                      ; read graphic
+0756  5E                        str     re                      ; write to screen
+0757  8E                        glo     re                      ; go down one line
+0758  FC 08                     adi     8
+075A  AE                        plo     re
+075B  2D                        dec     rd                      ; loop round 5 times
+075C  8D                        glo     rd
+075D  3A 55                     bnz     _DigitLoop
+075F  8E                        glo     re                      ; next position
+0760  FC D9                     adi     -40+1
+0762  AE                        plo     re
+0763  8F                        glo     rf                      ; reached the end
+0764  FA 0F                     ani     $0F
+0766  3A 49                     bnz     _ScoreLoop
+
+0768  E3                WaitP10:sex     r3                      ; use PC as Index
+0769  62                        out     2                       ; scan for key 0
+076A  00                        .db     0
+076B  3E 6B             _WaitK0:bn3     _WaitK0                 ; wait for key 0
+076D  C0 045D                   lbr     Start                   ; and restart
+
+07F8                            .org    $07F8                   ; this is a bitmask table
+07F8  80402010 08040201         .db     $80,$40,$20,$10,$08,$04,$02,$01
+0800                            .end
+
+00000 Total Error(s)
+
+BASESPD            0002 E  EXITMOVEBASE       05C1    EXITMOVEINVADERS   0585
+FBUTTON            0010 E  IBASE              0004 E  ICOUNT             0002 E
+INVADERGR          0402    IOFFSET            0000 E  ISDOWNLEFT         0001 E
+ISDOWNRIGHT        0003 E  ISLEFT             0000 E  ISRIGHT            0002 E
+ISTATUS            0003 E  LIVES              0003 E  MAINLOOP           04DC
+MCOUNT             0010 E  MIKILL             05F6    MILOOP             05C6
+MINEXT             05F8    MOVEBASE           0586    MOVEINVADERS       04E3
+MTABLE             0020 E  NEWLEVEL           046C    NEXTSTATE          057C
+NOMOVE             0586    NUMINDEXTAB        0210 E  PLIVES             000F E
+POFFSET            0001 E  PSCORE             000B E  R0                 0000 E
+R1                 0001 E  R2                 0002 E  R3                 0003 E
+R4                 0004 E  R5                 0005 E  R6                 0006 E
+R7                 0007 E  R8                 0008 E  R9                 0009 E
+RA                 000A E  RB                 000B E  RC                 000C E
+RD                 000D E  RE                 000E E  RF                 000F E
+RSEED              0005 E  SCROLLLEFT         041E    SCROLLRIGHT        0437
+SNDTMR             00CD E  START              045D    TMRINV             00CE E
+TMRPLY             00CF E  WAITP10            0768    XORMISSILES        044A
+_CHECKHITMISSILE   06C7    _CHMNEXT           06D2    _CLEAR             046F
+_CLEAR2            073B    _DIGITLOOP         0755    _ENDDRAWINV        049D
+_ENDGAME           0738    _EXITMB            059B    _HALFLINE          047F
+_HITSHIELD         069B    _HMOVEEND          051D    _HSCROLL           0530
+_INCSCORE          072A    _KILLPLAYER        06A4    _LEFT              059D
+_MCHECKNEW         060E    _MCHECKPLYR        0663    _MCLEAR            04D2
+_MICOLLIDE         068F    _MMOVEDOWN         05D6    _MNODRAW           05FF
+_MNOERASE          05D2    _MOVEDOWN          0552    _MOVELEFT          0515
+_MOVEPLAYER        05B9    _MOVERIGHT         050B    _MOVEUP            0653
+_NEXTLINE          06F3    _NOBSHIFT          056E    _NOCBACK           06E7
+_NOCFORWARD        0705    _NOFIREPRESSED     066F    _NOSKIP            049A
+_NOTIMISSILE       05E3    _PMCOLLIDE         06BC    _RIGHT             05AC
+_SCORELOOP         0749    _SCROLLUP          0575    _SETMAINTMR        04E0
+_SHIELDLOOP        04A3    _SHIFTLEFT         06F8    _SHIFTRIGHT        06E0
+_SRIGHT0           0439    _TESTOR            053A    _TESTREVERSE       0538
+_USEBIT0           054C    _WAITK0            076B    _XOR1              044E
+_XOR2              0455

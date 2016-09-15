@@ -1,0 +1,760 @@
+                        ; ***************************************************************************
+                        ;
+                        ;                     Hockey / Soccer / Pong / Squash
+                        ;
+                        ;                   An RCA Studio II Game by Paul Robson
+                        ;
+                        ;       Keys:   1,2,3,4 select Hockey,Soccer,Pong or Squash
+                        ;               8,9 select Easy or Hard Game
+                        ;               either 0 serves ; 2 and 8 move the bats
+                        ;
+                        ; ***************************************************************************
+                        ;
+                        ;       Reserved        R0,R1,R2,R8,R9,RB.0
+                        ;       R3      PC
+                        ;       R4      Ball Plot Routine
+                        ;       R5      Result (Ball Plot)
+                        ;       R6      Work (Ball Plot)
+                        ;       RA      Beep Timer
+                        ;       RE.1    points to video memory
+                        ;       RF.1    points to data memory
+                        ;
+                        ;       All Paddles are : Position, Height, Mask, 3 bytes each.
+                        ;
+                        ;       $800    Left Score (0-9)
+                        ;       $801    Right Score (0-9)
+                        ;       $802    Type (0=Hockey,1=Soccer,2=Pong,3 = Squash)
+                        ;       $803    Bat Size
+                        ;       $804    Left Goalie
+                        ;       $807    Left Striker
+                        ;       $80A    Right Goalie
+                        ;       $80D    Right Striker
+                        ;       $810    Ball X Position (0-63)
+                        ;       $811    Ball X Increment
+                        ;       $812    Ball Y Position (0-63)
+                        ;       $813    Ball Y Increment
+                        ;
+
+      = 000A            WinScore   = 10
+      = 0006            ServePoint = 6
+      = 0002            BallSpeed  = 2
+      = 0002            BatSpeed   = 2
+      = 0003            HBatSize   = 3
+      = 0005            EBatSize   = 5
+
+      = 0800            LeftSc  = $800
+      = 0801            RightSc = $801
+      = 0802            Type    = $802
+      = 0803            BatSize = $803
+      = 0804            Paddles = $804
+      = 0810            BallX   = $810
+      = 0811            BallXI  = $811
+      = 0812            BallY   = $812
+      = 0813            BallYI  = $813
+      = 08CD            SndTmr  = $8CD
+      = 08CE            BallTmr = $8CE
+      = 08CF            BatTmr  = $8CF
+
+0000                            .include "1802.inc"
+      = 0000            r0      = 0
+      = 0001            r1      = 1
+      = 0002            r2      = 2
+      = 0003            r3      = 3
+      = 0004            r4      = 4
+      = 0005            r5      = 5
+      = 0006            r6      = 6
+      = 0007            r7      = 7
+      = 0008            r8      = 8
+      = 0009            r9      = 9
+      = 000A            ra      = 10
+      = 000B            rb      = 11
+      = 000C            rc      = 12
+      = 000D            rd      = 13
+      = 000E            re      = 14
+      = 000F            rf      = 15
+
+0400                            .org    400h
+0400  0572                      .db     >(StartGame),<(StartGame)
+
+0402  F8 08             Start:  ldi     $08                     ; RF points to video RAM
+0404  BF                        phi     rf
+0405  BA                        phi     ra
+0406  91                        ghi     r1
+0407  AF                        plo     rf
+0408  5F                        str     rf                      ; Zero Left Score
+0409  1F                        inc     rf
+040A  5F                        str     rf                      ; Zero Right Score
+040B  1F                        inc     rf
+040C  F8 CD                     ldi     <(SndTmr)             ; Set RA to beep timer
+040E  AA                        plo     ra
+
+040F  E3                        sex     r3                      ; decide on which game
+0410                    _SelectGame:
+0410  62                        out     2                       ; key 4 (Squash)
+0411  04                        .db     4
+0412  F8 03                     ldi     3
+0414  36 27                     b3      _SetGame
+0416  62                        out     2                       ; key 3 (Pong)
+0417  03                        .db     3
+0418  F8 02                     ldi     2
+041A  36 27                     b3      _SetGame
+041C  62                        out     2                       ; key 1 (Soccer)
+041D  01                        .db     1
+041E  F8 01                     ldi     1
+0420  36 27                     b3      _SetGame
+0422  62                        out     2                       ; key 2 (Hockey)
+0423  02                        .db     2
+0424  3E 10                     bn3     _SelectGame
+0426  91                        ghi     r1
+0427                    _SetGame:                               ; Set Game Type
+0427  5F                        str     rf
+0428  F8 1E                     ldi     30                      ; beep to player
+042A  5A                        str     ra
+042B  F8 10                     ldi     <(BallX)              ; Set Ball Position (default value)
+042D  AF                        plo     rf                      ; on the left hand side first time
+042E  F8 06                     ldi     ServePoint              ; around
+0430  5F                        str     rf
+
+0431  F8 03                     ldi     <(BatSize)            ; Bat size 8 (Easy,5) 9 (Hard,3)
+0433  AF                        plo     rf
+0434                    _SelectSize:
+0434  62                        out     2
+0435  08                        .db     8
+0436  F8 05                     ldi     EBatSize
+0438  36 40                     b3      _SetSize
+043A  62                        out     2
+043B  09                        .db     9
+043C  F8 03                     ldi     HBatSize
+043E  3E 34                     bn3     _SelectSize
+0440                    _SetSize:
+0440  5F                        str     rf                      ; Save the bat size
+0441  F8 1E                     ldi     30                      ; beep to player
+0443  5A                        str     ra
+
+                        ; ***************************************************************************
+                        ;                                New Point
+                        ; ***************************************************************************
+
+0444                    NewPoint:
+
+                        ; ***************************************************************************
+                        ;                             Draw the game frame
+                        ; ***************************************************************************
+
+0444  F8 02                     ldi     <(Type)               ; Read game type into RB.1
+0446  AF                        plo     rf
+0447  0F                        ldn     rf
+0448  BB                        phi     rb
+0449  F8 09                     ldi     $09                     ; Point RD to the video frame
+044B  BD                        phi     rd
+044C  BC                        phi     rc                      ; Point RC there too
+044D  BE                        phi     re                      ; and RE is set up for later
+044E  91                        ghi     r1
+044F  AD                        plo     rd
+0450                    _DrawFrame:
+0450  91                        ghi     r1                      ; default is $00
+0451  5D                        str     rd
+0452  8D                        glo     rd
+0453  FA F8                     ani     $F8
+0455  32 8A                     bz      _DrawSolid              ; top line
+0457  FB F8                     xri     $F8
+0459  32 8A                     bz      _DrawSolid              ; bottom line
+
+045B  8D                        glo     rd                      ; check for squash back wall
+045C  FA 07                     ani     7
+045E  FB 07                     xri     7
+0460  3A 6B                     bnz     _NotSquash
+0462  9B                        ghi     rb
+0463  FB 03                     xri     3
+0465  3A 6B                     bnz     _NotSquash
+0467  F8 01                     ldi     $01
+0469  30 8C                     br      _DrawIt
+046B                    _NotSquash:
+
+046B  9B                        ghi     rb                      ; drawing a "football" game
+046C  3A 8D                     bnz     _DrawNext
+
+046E  8D                        glo     rd                      ; check in goal area
+046F  FE                        shl
+0470  8D                        glo     rd
+0471  3B 75                     bnf     _NotNeg
+0473  FD 00                     sdi     0
+0475  FC B8             _NotNeg:adi     $B8
+0477  33 8D                     bdf     _DrawNext
+
+0479  8D                        glo     rd                      ; check front or back
+047A  FA 07                     ani     7
+047C  32 86                     bz      _DrawEdge1
+047E  FB 07                     xri     7
+0480  3A 8D                     bnz     _DrawNext
+0482  F8 01                     ldi     $01
+0484  30 8C                     br      _DrawIt
+0486                    _DrawEdge1:
+0486  F8 80                     ldi     $80
+0488  30 8C                     br      _DrawIt
+048A                    _DrawSolid:
+048A  F8 FF                     ldi     $FF                     ; filled video square
+048C                    _DrawIt:
+048C  5D                        str     rd
+048D                    _DrawNext:                              ; paint the whole screen
+048D  1D                        inc     rd
+048E  8D                        glo     rd
+048F  3A 50                     bnz     _DrawFrame
+0491  2D                        dec     rd                      ; RE points to Video RAM page again
+
+0492  F8 14                     ldi     $14                     ; RF points to the centre bar
+0494                    _CentreBar:
+0494  AC                        plo     rc
+0495  F8 80                     ldi     $80
+0497  5C                        str     rc
+0498  8C                        glo     rc
+0499  FC 10                     adi     $10
+049B  3B 94                     bnf     _CentreBar
+
+049D  91                        ghi     r1                      ; point RF to score
+049E  AF                        plo     rf
+049F  F8 13                     ldi     $13                     ; point RE to the display position
+04A1  AE                        plo     re
+04A2                    _WriteScore:
+04A2  4F                        lda     rf                      ; read score digit
+04A3  F9 10                     ori     $10                     ; point to table at $211
+04A5  AD                        plo     rd
+04A6  F8 02                     ldi     $02
+04A8  BD                        phi     rd
+04A9  0D                        ldn     rd                      ; read the offset
+04AA  AD                        plo     rd                      ; RD now points to the graphic data
+04AB  F8 05                     ldi     5                       ; there are 5 bytes
+04AD  AC                        plo     rc
+04AE                    _CopyDigit:
+04AE  4D                        lda     rd                      ; read a byte
+04AF  F6                        shr
+04B0  F6                        shr
+04B1  B7                        phi     r7
+04B2  8F                        glo     rf
+04B3  F6                        shr
+04B4  97                        ghi     r7
+04B5  3B B8                     bnf     _NoBalance
+04B7  F6                        shr
+04B8                    _NoBalance:
+04B8  EE                        sex     re                      ; or into screen
+04B9  F1                        or
+04BA  5E                        str     re
+04BB  8E                        glo     re                      ; next position down
+04BC  FC 08                     adi     8
+04BE  AE                        plo     re
+04BF  2C                        dec     rc                      ; do it 5 times
+04C0  8C                        glo     rc
+04C1  3A AE                     bnz     _CopyDigit
+04C3  F8 14                     ldi     $14                     ; second position
+04C5  AE                        plo     re
+04C6  8F                        glo     rf                      ; done both
+04C7  F6                        shr
+04C8  33 A2                     bdf     _WriteScore
+04CA                    _EndScore:
+
+                        ; ***************************************************************************
+                        ;                       Initialise the paddles
+                        ; ***************************************************************************
+
+04CA  F8 B7             		ldi		<padInfo
+04CC  AC                		plo		rc
+04CD  F8 05             		ldi 	>padInfo
+04CF  BC                		phi 	rc
+
+04D0  F8 03                     ldi     <(BatSize)            ; Read Batsize into R5.1
+04D2  AF                        plo     rf
+04D3  0F                        ldn     rf
+04D4  B5                        phi     r5
+
+04D5  F8 04                     ldi     <(Paddles)            ; RF to point to paddle position memory
+04D7  AF                        plo     rf
+
+04D8  9F                        ghi     rf                      ; Make R7 point to the game type
+04D9  B7                        phi     r7
+04DA  F8 02                     ldi     <(Type)
+04DC  A7                        plo     r7
+
+04DD                    InitPaddle:
+04DD  07                        ldn     r7                      ; read game type
+04DE  FA 02                     ani     2
+04E0  C2 04FD                   lbz     _NotPong                ; all 4 if not "pong"
+04E3  0C                        ldn     rc                      ; read position
+04E4  C2 04FD                   lbz     _NotPong                ; if in square 0, draw if pong or squash
+04E7  07                        ldn     r7                      ; if squash, only square 0
+04E8  FB 03                     xri     3
+04EA  C2 04F3                   lbz     _KillPaddle
+04ED  0C                        ldn     rc
+04EE  FB 07                     xri     7                       ; if in square 7, draw if pong ONLY
+04F0  C2 04FD                   lbz     _NotPong
+
+04F3                    _KillPaddle:
+04F3  1C                        inc     rc                      ; skip RC past the table data
+04F4  1C                        inc     rc
+04F5  91                        ghi     r1                      ; zero the "position" of the paddle
+04F6  5F                        str     rf
+04F7  1F                        inc     rf                      ; skip over three bytes
+04F8  1F                        inc     rf
+04F9  1F                        inc     rf
+04FA  C0 0517                   lbr     _NextPDraw
+04FD                    _NotPong:
+04FD  4C                        lda     rc                      ; read the offset
+04FE  FC 70                     adi     $70                     ; centre it, roughly
+0500  5F                        str     rf                      ; store it in "position"
+0501  1F                        inc     rf
+0502  AE                        plo     re                      ; RE points to it
+0503  95                        ghi     r5                      ; get height
+0504  5F                        str     rf                      ; store that as well
+0505  1F                        inc     rf
+0506  AD                        plo     rd                      ; save height in RD.0
+0507  4C                        lda     rc                      ; get mask
+0508  5F                        str     rf
+0509  1F                        inc     rf
+050A  BB                        phi     rb                      ; save mask in RB.1
+050B                    _DrawPaddle:
+050B  9B                        ghi     rb                      ; xor mask in
+050C  EE                        sex     re
+050D  F3                        xor
+050E  5E                        str     re
+050F  8E                        glo     re                      ; bump pointer to next line
+0510  FC 08                     adi     8
+0512  AE                        plo     re
+0513  2D                        dec     rd                      ; do it for the height
+0514  8D                        glo     rd
+0515  3A 0B                     bnz     _DrawPaddle
+0517                    _NextPDraw:
+0517  8F                        glo     rf                      ; do all four paddles
+0518  FA 0F                     ani     $0F
+051A  CA 04DD                   lbnz    InitPaddle
+
+                        ; ***************************************************************************
+                        ;                  Initialise the Ball (Ball X already set up)
+                        ; ***************************************************************************
+
+051D  F8 10                     ldi     <(BallX)              ; access X Ball at RF
+051F  4F                        lda     rf                      ; read the X Ball position
+0520  FA F8                     ani     $F8                     ; look at "byte" value of position
+0522  32 26                     bz      _IsLeft                 ; if zero, on the left hand side
+0524  F8 02                     ldi     2                       ; now 0 left, 2 right
+0526  FD 01             _IsLeft:sdi     1                       ; now 1 left, -1 right
+0528  5F                        str     rf                      ; store at Ball X increment
+0529  1F                        inc     rf
+052A  89                        glo     r9                      ; get value from frame counter
+052B  FA 0F                     ani     15                      ; 0-15
+052D  FC 08                     adi     8                       ; 8-24
+052F  FE                        shl                             ; 16-48
+0530  5F                        str     rf                      ; this is Ball Y position
+0531  1F                        inc     rf
+0532  F8 FF                     ldi     -1                      ; Ball always serves "up"
+0534  5F                        str     rf
+
+0535  F8 05             		ldi 	>BallDraw				; R4 is the drawing subroutine
+0537  B4                		phi 	r4
+0538  F8 46             		ldi 	<BallDraw
+053A  A4                		plo 	r4
+053B  D4                        sep     r4                      ; call it to draw Ball
+
+053C  E3                        sex     r3                      ; wait for either key '0'
+053D  62                        out     2
+053E  00                        .db     0
+053F  36 43             _Wait0: b3      _Start0
+0541  3F 3F                     bn4     _Wait0
+0543  C0 0600           _Start0:lbr     MainLoop
+
+                        ; ***************************************************************************
+                        ;
+                        ;       Ball Draw Subroutine. XOR Plots Ball at Current Position.
+                        ;
+                        ;       On Exit,
+                        ;               R5 contains the address, RB.1 mask, D = 0 = Collision
+                        ;               DF,R6 undefined values
+                        ;
+                        ; ***************************************************************************
+
+0546                    BallDraw:
+0546  9E                        ghi     re                      ; point R5 to the video display
+0547  B5                        phi     r5
+0548  9F                        ghi     rf                      ; point R6 to the Y Ball Position
+0549  B6                        phi     r6
+054A  F8 12                     ldi     <(BallY)
+054C  A6                        plo     r6
+054D  06                        ldn     r6                      ; read Y position
+054E  FA 3E                     ani     $3E                     ; value 0,2,4,6,8...62
+0550  FE                        shl                             ; multiply by 4
+0551  FE                        shl
+0552  22                        dec     r2                      ; make room on the stack and save it
+0553  52                        str     r2
+0554  26                        dec     r6                      ; point R6 to the X Ball Position
+0555  26                        dec     r6
+0556  06                        ldn     r6                      ; read it
+0557  FA 3F                     ani     63
+0559  F6                        shr                             ; divide by 8
+055A  F6                        shr
+055B  F6                        shr
+055C  E2                        sex     r2                      ; add to Y * 8 on the stack
+055D  F4                        add
+055E  12                        inc     r2                      ; fix the stack
+055F  A5                        plo     r5                      ; put into R5
+
+0560  06                        ldn     r6                      ; read X position
+0561  F9 F8                     ori     <(MaskTable)          ; make R6 point to the mask
+0563  A6                        plo     r6
+0564  F8 05                     ldi     >(MaskTable)
+0566  B6                        phi     r6
+0567  06                        ldn     r6                      ; read mask
+0568  BB                        phi     rb                      ; put in RB.1
+0569  E5                        sex     r5                      ; XOR with the screen
+056A  F3                        xor
+056B  55                        str     r5
+056C  9B                        ghi     rb                      ; re read the mask
+056D  F2                        and                             ; AND with the screen. Zero if collision
+056E  D3                        sep     r3
+056F  C0 0546                   lbr     BallDraw
+
+
+                        ; ***************************************************************************
+                        ;                               Start up
+                        ; ***************************************************************************
+
+0572                    StartGame:
+0572  F8 09                     ldi     9                       ; set up E,C to point to video
+0574  BE                        phi     re
+0575  BC                        phi     rc
+0576  91                        ghi     r1                      ; clear the screen
+0577  AE                        plo     re
+0578                    _SGClear:
+0578  91                        ghi     r1
+0579  5E                        str     re
+057A  1E                        inc     re
+057B  8E                        glo     re
+057C  3A 78                     bnz     _SGClear
+
+057E  F8 05                     ldi 	>Banner                 ; RE := Banner
+0580  BE                		phi		re
+0581  F8 9B             		ldi 	<Banner
+0583  AE                		plo 	re
+
+0584  F8 11                     ldi     2*8+1                   ; RC := Banner Position
+0586  AC                        plo     rc
+0587                    _CopyBanner:
+0587  0E                        ldn     re                      ; if first is $01 then exit
+0588  FB 01                     xri     1
+058A  C2 0402                   lbz     Start
+058D  4E                        lda     re                      ; copy three bytes
+058E  5C                        str     rc
+058F  1C                        inc     rc
+0590  4E                        lda     re
+0591  5C                        str     rc
+0592  1C                        inc     rc
+0593  4E                        lda     re
+0594  5C                        str     rc
+0595  8C                        glo     rc                      ; then a new line
+0596  FC 06                     adi     6
+0598  AC                        plo     rc
+0599  30 87                     br      _CopyBanner
+
+                        ;       xxxx..xx!xx..x..x!..xxxx..
+                        ;       x..x..x.!.x..xx.x!..x.....
+                        ;       xxxx..x.!.x..x.xx!..x.xx..
+                        ;       x.....x.!.x..x..x!..x..x..
+                        ;       x.....xx!xx..x..x!..xxxx..
+
+059B  FFFFFC            Banner: .db     $FF,$FF,$FC
+059E  000000                    .db     $00,$00,$00
+05A1  F3C93C                    .db     $F3,$C9,$3C
+05A4  924D20                    .db     $92,$4D,$20
+05A7  F24B2C                    .db     $F2,$4B,$2C
+05AA  824924                    .db     $82,$49,$24
+05AD  83C93C                    .db     $83,$C9,$3C
+05B0  000000                    .db     $00,$00,$00
+05B3  FFFFFC                    .db     $FF,$FF,$FC
+05B6  01                        .db     $01
+                        ;
+                        ;
+05B7                    PadInfo:                                ; pairs of positions, masks
+05B7  0010                      .db     0,$10                   ; Left Goalie [$804]
+05B9  0540                      .db     5,$40                   ; Left Striker [$807]
+05BB  0708                      .db     7,$08                   ; Right Goalie [$80A]
+05BD  0202                      .db     2,$02                   ; Right Striker [$80D]
+
+05F0                            .org    $05F0
+05F0                    ByteToAddr:
+05F0  04                        .db     $04                     ; comes from the table above
+05F1  00                        .db     $00                     ; convert the byte address to an
+05F2  0D                        .db     $0D                     ; address of the paddle record
+05F3  00                        .db     $00
+05F4  00                        .db     $00
+05F5  07                        .db     $07
+05F6  00                        .db     $00
+05F7  07                        .db     $07
+
+05F8                            .org    $05F8
+05F8                    MaskTable:
+05F8  80402010 08040201         .db     $80,$40,$20,$10,$8,$4,$2,$1
+
+                        ; ***************************************************************************
+                        ;
+                        ;                               Main Game Loop
+                        ;
+                        ; ***************************************************************************
+
+0600                            .org    $600
+0600                    MainLoop:
+
+                        ; ***************************************************************************
+                        ;                             Move the paddles
+                        ; ***************************************************************************
+
+0600  F8 CF                     ldi     <(BatTmr)             ; time to move the bats
+0602  AF                        plo     rf
+0603  0F                        ldn     rf
+0604  3A 61                     bnz     _EndMovePaddles
+0606  F8 02                     ldi     BatSpeed
+0608  5F                        str     rf
+0609  F8 04                     ldi     <(Paddles)            ; set RF to point to the paddles
+060B  AF                        plo     rf
+060C                    _MovePaddles:
+060C  9F                        ghi     rf                      ; copy RF to RD, points to position
+060D  BD                        phi     rd
+060E  8F                        glo     rf
+060F  AD                        plo     rd
+0610  4F                        lda     rf                      ; position in RE, RE points paddle top
+0611  AE                        plo     re
+0612  4F                        lda     rf                      ; read height
+0613  FE                        shl                             ; multiply by 8
+0614  FE                        shl
+0615  FE                        shl
+0616  ED                        sex     rd                      ; add to paddle position
+0617  F4                        add
+0618  AC                        plo     rc                      ; RC points to byte after paddle
+0619  9E                        ghi     re                      ; in video RAM
+061A  BC                        phi     rc
+061B  4F                        lda     rf                      ; read mask
+061C  BB                        phi     rb                      ; put in RB.1
+
+061D  0D                        ldn     rd                      ; read position
+061E  32 36                     bz      _NextPaddle             ; if zero, don't move
+
+0620  E3                        sex     r3                      ; starting to scan keyboard
+0621  62                        out     2                       ; scan key 2 (up)
+0622  02                        .db     2
+
+0623  8D                        glo     rd                      ; if this is $04 or $07 it is player 1
+0624  FA 08                     ani     $08                     ; if it is $0A or $0D it is player 2
+0626  3A 30                     bnz     _Player2
+
+0628  36 3D                     b3      _PaddleUp
+062A  62                        out     2                       ; scan key 8 (down)
+062B  08                        .db     8
+062C  36 4E                     b3      _PaddleDown
+062E  30 36                     br      _NextPaddle
+0630                    _Player2:
+0630  37 3D                     b4      _PaddleUp
+0632  62                        out     2                       ; scan key 8 (down)
+0633  08                        .db     8
+0634  37 4E                     b4      _PaddleDown
+0636                    _NextPaddle:
+0636  8F                        glo     rf                      ; done all paddles
+0637  FA 0F                     ani     $0F
+0639  3A 0C                     bnz     _MovePaddles
+063B  30 61                     br      _EndMovePaddles
+
+063D                    _PaddleUp:
+063D  8E                        glo     re                      ; moving up, move both top and bottom
+063E  FF 08                     smi     8
+0640  AE                        plo     re
+0641  8C                        glo     rc
+0642  FF 08                     smi     8
+0644  AC                        plo     rc
+0645  EE                        sex     re
+0646  9B                        ghi     rb                      ; see if can move up
+0647  F2                        and
+0648  3A 36                     bnz     _NextPaddle             ; if pixel set, can't move
+064A  8E                        glo     re                      ; update the position
+064B  5D                        str     rd
+064C  30 57                     br      _PMoveNow
+064E                    _PaddleDown:
+064E  EC                        sex     rc                      ; see if can move down
+064F  9B                        ghi     rb
+0650  F2                        and
+0651  3A 36                     bnz     _NextPaddle             ; if pixel set, can't move
+0653  8E                        glo     re                      ; update position
+0654  FC 08                     adi     8
+0656  5D                        str     rd
+0657                    _PMoveNow:
+0657  EE                        sex     re                      ; toggle top and bottom pixels
+0658  9B                        ghi     rb
+0659  F3                        xor
+065A  5E                        str     re
+065B  EC                        sex     rc
+065C  9B                        ghi     rb
+065D  F3                        xor
+065E  5C                        str     rc
+065F  30 36                     br      _NextPaddle             ; and do the next one
+
+0661                    _EndMovePaddles:
+
+                        ; ***************************************************************************
+                        ;                               Move the Ball
+                        ; ***************************************************************************
+
+0661  F8 CE                     ldi     <(BallTmr)            ; read the ball timer
+0663  AF                        plo     rf
+0664  0F                        ldn     rf
+0665  3A A9                     bnz     _EndMoveBall
+0667  F8 02                     ldi     BallSpeed               ; timed out, update timer
+0669  5F                        str     rf
+066A  D4                        sep     r4                      ; erase the old ball
+
+066B  F8 14                     ldi     <(BallYI)+1           ; prepare to move coordinates
+066D  AF                        plo     rf
+066E                    _AdjustCoords:
+066E  2F                        dec     rf
+066F  0F                        ldn     rf                      ; read the increment
+0670  2F                        dec     rf                      ; add to the position
+0671  EF                        sex     rf
+0672  F4                        add
+0673  5F                        str     rf                      ; update the position
+0674  8F                        glo     rf
+0675  FA 0F                     ani     $0F                     ; done all of them ?
+0677  3A 6E                     bnz     _AdjustCoords
+0679  D4                        sep     r4                      ; redraw it
+067A  3A A9                     bnz     _EndMoveBall            ; if non-zero no collision
+
+067C  85                        glo     r5                      ; look at the address
+067D  FA F8                     ani     $F8                     ; which row is it on ?
+067F  32 9F                     bz      _VertBounce             ; if 0 it is vertical bounce
+0681  FB F8                     xri     $F8                     ; if 31 it is vertical bounce
+0683  32 9F                     bz      _VertBounce
+
+0685  85                        glo     r5                      ; look at the columns ; if 3 or 4
+0686  FA 07                     ani     $07                     ; there is no bounce
+0688  FB 03                     xri     3
+068A  32 A9                     bz      _EndMoveBall
+068C  FB 07                     xri     7
+068E  32 A9                     bz      _EndMoveBall
+
+0690  F8 10                     ldi     <(BallX)              ; read the real X position
+0692  AF                        plo     rf
+0693  0F                        ldn     rf
+0694  32 9B                     bz      _WallBounce             ; if 0 or 63 then bouncing off a wall
+0696  FB 3F                     xri     63                      ; otherwise bouncing off a bat, so
+0698  CA 06D4                   lbnz    _AdjustYI               ; need to adjust YI
+
+069B                    _WallBounce:
+069B  F8 11                     ldi     <(BallXI)             ; horizontal bounce
+069D  30 A1                     br      _Bounce
+
+069F                    _VertBounce:                            ; vertical bounce
+069F  F8 13                     ldi     <(BallYI)
+06A1                    _Bounce:
+06A1  AF                        plo     rf                      ; bounce the value
+06A2  0F                        ldn     rf                      ; read it
+06A3  FD 00                     sdi     0                       ; negate it
+06A5  5F                        str     rf                      ; write it back
+06A6  F8 03                     ldi     3                       ; Short Beep
+06A8  5A                        str     ra
+06A9                    _EndMoveBall:
+06A9  F8 10                     ldi     <(BallX)              ; Read new ball X position
+06AB  AF                        plo     rf                      ; (point RF *and* RC)
+06AC  AC                        plo     rc
+06AD  0F                        ldn     rf
+06AE  FA C0                     ani     $C0                     ; if off either left or right
+06B0  C2 0600                   lbz     MainLoop
+06B3  D4                        sep     r4                      ; Erase the ball
+06B4  F8 1E                     ldi     30                      ; Long Beep
+06B6  5A                        str     ra
+06B7  0F                        ldn     rf                      ; Read Ball X position
+06B8  F6                        shr                             ; shift MSB into DF
+06B9  91                        ghi     r1
+06BA  7E                        shlc                            ; now 0 for right, 1 for left
+06BB  AF                        plo     rf                      ; RF points to score
+06BC  0F                        ldn     rf                      ; bump the score
+06BD  FC 01                     adi     1
+06BF  5F                        str     rf
+06C0  FB 0A                     xri     WinScore                ; game over
+06C2  C2 0572                   lbz     StartGame
+06C5  9F                        ghi     rf                      ; RC points to the Ball X value
+06C6  BC                        phi     rc
+06C7  8F                        glo     rf                      ; RF = 0 (left won) 1 (right won)
+06C8  FB 01                     xri     $01
+06CA  32 CE                     bz      _LServe
+06CC  FC 32                     adi     62-ServePoint-ServePoint; Shift to the right
+06CE  FC 06             _LServe:adi     ServePoint
+06D0  5C                        str     rc                      ; Write it back
+06D1  C0 0444                   lbr     NewPoint
+
+                        ; ***************************************************************************
+                        ;         Ball has hit a bat. Figure out the new vertical direction
+                        ; ***************************************************************************
+
+06D4                    _AdjustYI:
+06D4  85                        glo     r5                      ; read the byte address where hit
+06D5  FA 07                     ani     $07
+06D7  F9 F0                     ori     $F0                     ; in RD make pointer to table
+06D9  AD                        plo     rd                      ; to get the appropriate paddle
+06DA  F8 05                     ldi     $05
+06DC  BD                        phi     rd
+06DD  0D                        ldn     rd                      ; read the paddle
+06DE  AF                        plo     rf                      ; RF now points to the paddle record
+06DF  4F                        lda     rf                      ; read the address, point to height
+06E0  C2 069B                   lbz     _WallBounce             ; (safety) no paddle there.....
+06E3  0F                        ldn     rf                      ; read the height
+06E4  F6                        shr                             ; divide by 2
+06E5  FE                        shl                             ; multiply by 8
+06E6  FE                        shl
+06E7  FE                        shl
+06E8  2F                        dec     rf                      ; point to address again
+06E9  EF                        sex     rf                      ; add the top of the paddle
+06EA  F4                        add                             ; this is the centre address
+06EB  22                        dec     r2                      ; save centre addresss on stack space
+06EC  52                        str     r2
+06ED  E2                        sex     r2
+06EE  85                        glo     r5                      ; get collision address
+06EF  F7                        sm                              ; calculate collision-centre
+06F0  12                        inc     r2                      ; fix the stack
+06F1  32 FA                     bz      _SetYI                  ; work out the angle to go at
+06F3  FE                        shl
+06F4  F8 FF                     ldi     $FF
+06F6  33 FA                     bdf     _SetYI
+06F8  F8 01                     ldi     $01
+06FA  BB                _SetYI: phi     rb
+06FB  F8 13                     ldi     <(BallYI)
+06FD  AF                        plo     rf
+06FE  9B                        ghi     rb
+06FF  5F                        str     rf
+0700  C0 069B                   lbr     _WallBounce
+
+07FF                            .org    07FFh                   ; fill it
+07FF  FF                        .db     0FFh
+0800                            .end
+
+00000 Total Error(s)
+
+BALLDRAW           0546    BALLSPEED          0002 E  BALLTMR            08CE E
+BALLX              0810 E  BALLXI             0811 E  BALLY              0812 E
+BALLYI             0813 E  BANNER             059B    BATSIZE            0803 E
+BATSPEED           0002 E  BATTMR             08CF E  BYTETOADDR         05F0
+EBATSIZE           0005 E  HBATSIZE           0003 E  INITPADDLE         04DD
+LEFTSC             0800 E  MAINLOOP           0600    MASKTABLE          05F8
+NEWPOINT           0444    PADDLES            0804 E  PADINFO            05B7
+R0                 0000 E  R1                 0001 E  R2                 0002 E
+R3                 0003 E  R4                 0004 E  R5                 0005 E
+R6                 0006 E  R7                 0007 E  R8                 0008 E
+R9                 0009 E  RA                 000A E  RB                 000B E
+RC                 000C E  RD                 000D E  RE                 000E E
+RF                 000F E  RIGHTSC            0801 E  SERVEPOINT         0006 E
+SNDTMR             08CD E  START              0402    STARTGAME          0572
+TYPE               0802 E  WINSCORE           000A E  _ADJUSTCOORDS      066E
+_ADJUSTYI          06D4    _BOUNCE            06A1    _CENTREBAR         0494
+_COPYBANNER        0587    _COPYDIGIT         04AE    _DRAWEDGE1         0486
+_DRAWFRAME         0450    _DRAWIT            048C    _DRAWNEXT          048D
+_DRAWPADDLE        050B    _DRAWSOLID         048A    _ENDMOVEBALL       06A9
+_ENDMOVEPADDLES    0661    _ENDSCORE          04CA    _ISLEFT            0526
+_KILLPADDLE        04F3    _LSERVE            06CE    _MOVEPADDLES       060C
+_NEXTPADDLE        0636    _NEXTPDRAW         0517    _NOBALANCE         04B8
+_NOTNEG            0475    _NOTPONG           04FD    _NOTSQUASH         046B
+_PADDLEDOWN        064E    _PADDLEUP          063D    _PLAYER2           0630
+_PMOVENOW          0657    _SELECTGAME        0410    _SELECTSIZE        0434
+_SETGAME           0427    _SETSIZE           0440    _SETYI             06FA
+_SGCLEAR           0578    _START0            0543    _VERTBOUNCE        069F
+_WAIT0             053F    _WALLBOUNCE        069B    _WRITESCORE        04A2

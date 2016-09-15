@@ -1,0 +1,1805 @@
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											BERZERK - For the RCA Studio 2 (1802 Assembler)
+                        ;											===============================================
+                        ;
+                        ;	Author : 	Paul Robson (paul@robsons.org.uk)
+                        ;	Tools :		Assembles with asmx cross assembler http://xi6.com/projects/asmx/
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;       Reserved for Studio 2 BIOS : 	R0,R1,R2,R8,R9,RB.0
+                        ;
+                        ;		Other usage
+                        ;		===========
+                        ;		R2 		Used for Stack, therefore R2.1 always points to RAM Page.
+                        ;       R3      PC (lowest level)
+                        ;		R4 		PC (level 1 subroutine)
+                        ;		R5 		PC (level 2 subroutine)
+                        ;
+                        ; ***************************************************************************************************************************************
+                        ; ***************************************************************************************************************************************
+
+      = 0008            RamPage	= 8													; 256 byte RAM page used for Data ($800 on S2)
+      = 0009            VideoPage = 9												; 256 byte RAM page used for Video ($900 on S2)
+
+      = 00CD            Studio2BeepTimer = $CD 										; Studio 2 Beep Counter
+      = 00CE            Studio2SyncTimer = $CE 										; Studio 2 Syncro timer.
+
+      = 00E0            XRoom = $E0 												; Horizontal Room Number
+      = 00E1            YRoom = $E1 												; Vertical Room Number
+      = 00E2            Seed1 = $E2 												; Random Number Seed #1
+      = 00E3            Seed2 = $E3 												; Random Number Seed #2
+
+      = 00E4            NorthDoor = $E4 											; door present flags. If non-zero can exit in that direction.
+      = 00E5            SouthDoor = $E5 											
+      = 00E6            EastDoor = $E6
+      = 00E7            WestDoor = $E7
+
+      = 00E8            LivesLost = $E8 											; Number of lives lost
+      = 00E9            Score = $E9 												; Score (LS Digit first, 6 digits)
+
+      = 00F0            FrameCounter = $F0 											; Frame counter
+      = 00F1            KeyboardState = $F1 										; Current Keyboard State (0-9 + bit 7 for fire)
+
+      = 007D            XAdjustStart = 125
+      = 00E3            YAdjustStart = 227
+
+                        ; ------------------------------------------------------------------------------------------------------------------------------------
+                        ;
+                        ; +0 	bit 7 : Not in use, bit 6 : To be Deleted, Bit 5 : not drawn Bits 3-0 : ObjectID
+                        ;																	(0 = Player, 1 =  Missile, 2-4 = Robots)
+                        ; +1    Speed Mask (and with Frame counter, move if zero)
+                        ; +2 	bits 3..0 direction as per Studio 2 Keypad, 0 = no movement
+                        ; +3 	X position (0-63)
+                        ; +4    Y position (0-31)
+                        ; +5    0 if graphic not drawn, or LSB of address of 3 bit right justified graphic terminated with $00
+                        ;
+                        ; It is a convention that an objects missile immediately follows it's own object. Object 0 is the Player, Object 1 is the Player Missile
+                        ;
+                        ; ------------------------------------------------------------------------------------------------------------------------------------
+
+      = 0000            ObjectStart = $00
+      = 0006            ObjectRecordSize = 6
+      = 000A            ObjectCount = 2+8
+      = 003C            ObjectEnd = ObjectStart+ObjectRecordSize * ObjectCount
+
+      = 0000            PlayerObject = ObjectStart+0*ObjectRecordSize
+      = 0006            PlayerMissileObject = ObjectStart+1*ObjectRecordSize
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Studio 2 Boot Code
+                        ;	
+                        ; ***************************************************************************************************************************************
+
+0000                        	.include "1802.inc"
+      = 0000            r0      = 0
+      = 0001            r1      = 1
+      = 0002            r2      = 2
+      = 0003            r3      = 3
+      = 0004            r4      = 4
+      = 0005            r5      = 5
+      = 0006            r6      = 6
+      = 0007            r7      = 7
+      = 0008            r8      = 8
+      = 0009            r9      = 9
+      = 000A            ra      = 10
+      = 000B            rb      = 11
+      = 000C            rc      = 12
+      = 000D            rd      = 13
+      = 000E            re      = 14
+      = 000F            rf      = 15
+
+0400                        	.org    400h										; ROM code in S2 starts at $400.
+0400                    StartCode:
+0400  0C00                  	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;										  Draw Room according to current specification.
+                        ;
+                        ; Runs in R4, Returns to R3
+                        ; ***************************************************************************************************************************************
+
+0402                    DrawRoom:
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;											Clear the whole screen, draw the basic frame.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0402  F8 09             		ldi 	VideoPage 									; point RF to video page
+0404  BF                		phi 	rf
+0405  F8 00             		ldi 	0
+0407  AF                		plo 	rf
+0408                    DRM_ClearScreen:
+0408  8F                		glo 	rf
+0409  FA F8             		ani 	$F8 										; top and bottom lines
+040B  32 2E             		bz 		DRM_WriteFF
+040D  FB F0             		xri 	$F0
+040F  32 2E             		bz 		DRM_WriteFF
+0411  FB 08             		xri 	$08
+0413  32 1E             		bz 		DRM_Write00
+0415  8F                		glo 	rf 											; check left and right sides
+0416  FA 07             		ani 	$07
+0418  32 26             		bz 		DRM_Write80
+041A  FB 07             		xri 	$07
+041C  32 22             		bz 		DRM_Write08
+041E                    DRM_Write00:												; erase
+041E  F8 00             		ldi 	$00
+0420  30 37             		br 		DRM_Write
+0422                    DRM_Write08:												; right wall
+0422  F8 08             		ldi 	$08
+0424  30 37             		br 		DRM_Write
+0426                    DRM_Write80: 												; left wall
+0426  F8 80             		ldi 	$80
+0428  30 37             		br 		DRM_Write
+042A                    DRM_WriteF8: 												; top/bottom right
+042A  F8 F8             		ldi 	$F8
+042C  30 37             		br 		DRM_Write
+042E                    DRM_WriteFF: 												; write top/bottom
+042E  8F                		glo 	rf 											; check RHS
+042F  FA 07             		ani 	7
+0431  FB 07             		xri 	7
+0433  32 2A             		bz 		DRM_WriteF8
+0435  F8 FF             		ldi 	$FF
+0437                    DRM_Write: 													; write and fill whole screen
+0437  5F                		str 	rf
+0438  1F                		inc 	rf
+0439  8F                		glo 	rf
+043A  3A 08             		bnz 	DRM_ClearScreen
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;										  Get West Door from room to the left's east door
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+043C  F8 E7             		ldi 	WestDoor 									; point RF to West door, RE to XRoom.
+043E  AF                		plo 	rf
+043F  F8 E0             		ldi 	XRoom
+0441  AE                		plo 	re
+0442  92                		ghi 	r2
+0443  BF                		phi 	rf
+0444  BE                		phi 	re
+
+0445  0E                		ldn 	re 											; read XRoom
+0446  AD                		plo 	rd 											; save it in RD.
+0447  FF 01             		smi 	1
+0449  5E                		str 	re 											; go to the room to the left.
+
+044A  F8 05             		ldi 	>ResetSeed 									; reset the seed according to room to the immediate left.
+044C  B5                		phi	 	r5
+044D  F8 4C             		ldi 	<ResetSeed
+044F  A5                		plo 	r5
+0450  D5                		sep 	r5 											; reset the seed, get the first Random Number
+0451  FA 01             		ani 	$01 										; bit 0 (east door) becomes our west door.
+0453  5F                		str 	rf
+
+0454  8D                		glo 	rd 											; restore old XRoom
+0455  5E                		str 	re
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;										Get North door from rom to the north's south door.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0456  1E                		inc 	re 											; RE points to Y Room
+0457  F8 E4             		ldi 	NorthDoor 									; RF to North Door.
+0459  AF                		plo 	rf
+
+045A  0E                		ldn 	re 											; Read Y Room
+045B  AD                		plo 	rd 											; save in RD.0
+045C  FF 01             		smi 	1
+045E  5E                		str 	re 											; go to room above
+045F  F8 4C             		ldi 	<ResetSeed
+0461  A5                		plo 	r5
+0462  D5                		sep 	r5 											; reset the seed, get the first Random Number
+0463  FA 02             		ani 	$02 										; bit 1 (south door) becomes our north door.
+0465  5F                		str 	rf
+
+0466  8D                		glo 	rd 											; restore old Y Room
+0467  5E                		str 	re
+
+0468  F8 E5             		ldi 	SouthDoor 									; point RF to south door.
+046A  AF                		plo 	rf
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;								Get South and East doors from our current room, initialise RNG for walls
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+046B  F8 4C             		ldi 	<ResetSeed 									; reset the seed, our actual room now.
+046D  A5                		plo 	r5
+046E  D5                		sep 	r5 											; reset the seed, get the first Random Number
+
+046F  F6                		shr 												; shift bit 0 (east door) into DF
+0470  FA 01             		ani 	$01 										; bit 0 (was bit 1) is the south door
+0472  5F                		str 	rf
+0473  1F                		inc 	rf 											; point RF to east door
+0474  F8 00             		ldi 	$00
+0476  76                		shrc 												; get the old bit 7 out.
+0477  5F                		str 	rf 											; save in east door.
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;							Draw the 8 walls from the 8 centre point in directions chosen from the RNG
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0478  F8 09             		ldi 	VideoPage 									; set RF to point to the first of the eight 'wall' centre points
+047A  BF                		phi 	rf
+047B  F8 51             		ldi 	10*8+1 										; row 8, byte 1
+047D  AF                		plo 	rf
+047E  F8 08             		ldi 	$08 										; set RE.1 to point to the current bit mask for Oring in.
+0480  BE                		phi 	re
+0481  F8 0F             		ldi 	$0F 										; set RE.0 to the current byte #1 for Oring in.		
+0483  AE                		plo 	re
+0484  F8 FF             		ldi 	$FF 										; set RD.1 to currentbyte #2 for Oring in.
+0486  BD                		phi 	rd
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;														Inner Wall Loop
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+0487                    DRM_Loop1:
+0487  8F                		glo 	rf 											; save start position in RC.1s
+0488  BC                		phi 	rc
+
+0489  9E                		ghi 	re 											; set the pixel on the wall corner
+048A  EF                		sex 	rf
+048B  F1                		or
+048C  5F                		str 	rf
+
+048D  D5                		sep 	r5 											; get the second seeded number that defines the room layout.
+048E  FE                		shl 												; put bit 7 in DF
+048F  3B AC             		bnf 	DRM_WallHorizontal 							; if clear the wall is horizontal.
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;												Vertical wall, either direction
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0491  FE                		shl 												; put bit 6 in DF.
+0492  F8 08             		ldi 	8 											; use that to decide up or down ?
+0494  3B 98             		bnf 	DRM_VerticalOpposite
+0496  F8 F8             		ldi		-8
+0498                    DRM_VerticalOpposite:
+
+0498  22                		dec 	r2 											; save offset position on stack.
+0499  52                		str 	r2
+049A  F8 0A             		ldi 	10 											; set RC.0 (counter) to 10
+049C  AC                		plo 	rc
+049D                    DRM_VerticalLoop:
+049D  EF                		sex 	rf 											; video memory = index
+049E  9E                		ghi 	re 											; or bit mask in.
+049F  F1                		or
+04A0  5F                		str 	rf
+04A1  E2                		sex 	r2 											; offset = index
+04A2  8F                		glo 	rf 											; add to screen position
+04A3  F4                		add
+04A4  AF                		plo 	rf
+04A5  2C                		dec 	rc 											; do it 10 times.
+04A6  8C                		glo 	rc
+04A7  3A 9D             		bnz 	DRM_VerticalLoop
+04A9  12                		inc 	r2 											; fix stack up.
+04AA  30 CA             		br 		DRM_Next
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;										Horizontal walls, seperate code for left and right
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+04AC                    DRM_WallHorizontal:
+04AC  FE                		shl 												; bit 6 determines direction
+04AD  3B B9             		bnf 	DRM_WallLeft
+
+04AF  EF                		sex 	rf 											; index = vram - right wall
+04B0  8E                		glo		re
+04B1  F1                		or
+04B2  5F                		str 	rf
+04B3  1F                		inc 	rf
+04B4  9D                		ghi 	rd
+04B5  F1                		or
+04B6  5F                		str 	rf
+04B7  30 CA             		br 		DRM_Next
+
+04B9                    DRM_WallLeft: 												; left wall.
+04B9  EF                		sex 	rf
+04BA  9E                		ghi 	re 											; check the wall pixel
+04BB  FE                		shl
+04BC  3B BF             		bnf 	DRMWL_NotLHB 						
+04BE  2F                		dec 	rf 											; back one if the wall is not on the MS Bit.		
+04BF                    DRMWL_NotLHB:
+04BF  9D                		ghi 	rd
+04C0  FB 0F             		xri 	$0F
+04C2  F1                		or
+04C3  5F                		str 	rf
+04C4  2F                		dec 	rf
+04C5  8E                		glo 	re
+04C6  FB F0             		xri 	$F0
+04C8  F1                		or
+04C9  5F                		str 	rf
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;													Advance to next wall position
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+04CA                    DRM_Next:
+04CA  9C                		ghi 	rc 											; reset start position saved in RC.1
+                        		
+04CB  AF                		plo		rf
+04CC  8E                		glo 	re 											; change the ORing byte from $0F to $FF
+04CD  FB F0             		xri 	$F0 			
+04CF  AE                		plo 	re
+
+04D0  9D                		ghi 	rd 											; change the other one from $FF to $F0
+04D1  FB 0F             		xri 	$0F
+04D3  BD                		phi 	rd
+
+04D4  9E                		ghi 	re 											; change the ORing bitmask from $08 to $80
+04D5  FB 88             		xri 	$88
+04D7  BE                		phi 	re
+04D8  FE                		shl 												; if gone from 08 to 80 add 1 to rf
+04D9  3B DC             		bnf 	DRM_NoBump
+04DB  1F                		inc 	rf
+04DC                    DRM_NoBump:
+04DC  1F                		inc 	rf 											; add one further to RF anyway.
+04DD  8F                		glo 	rf 											; reached the end of row 2 ?
+04DE  FB A7             		xri 	20*8+7
+04E0  32 EC             		bz 		DRM_Frame
+04E2  8F                		glo 	rf
+04E3  FB 57             		xri 	10*8+7 										; reached the end of row 1 ?
+04E5  3A 87             		bnz		DRM_Loop1 									; no keep going
+04E7  F8 A1             		ldi 	20*8+1 										; yes, move to the second row
+04E9  AF                		plo 	rf
+04EA  30 87             		br 		DRM_Loop1
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;														Open top and bottom doors
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+04EC                    DRM_Frame:
+04EC  F8 03             		ldi 	3 											; point RF to upper door space
+04EE  AF                		plo 	rf
+04EF  92                		ghi 	r2 											; point RE to NorthDoor
+04F0  BE                		phi 	re
+04F1  F8 E4             		ldi 	NorthDoor
+04F3  AE                		plo 	re
+04F4  30 FF             		br 		DRM_TBDoor-1 								; sorts the page out.
+
+04FF                    		.org 	StartCode+$FF
+04FF  8E                		glo 	re 											; nop but not 3 cycles.
+0500                    DRM_TBDoor:
+0500  0E                		ldn 	re 											; read north door
+0501  32 0B             		bz 		DRM_TBClosed 								; if zero, it is closed.
+0503  F8 80             		ldi 	$80 										; open door on display
+0505  5F                		str 	rf
+0506  1F                		inc 	rf
+0507  F8 0F             		ldi 	$0F
+0509  5F                		str 	rf
+050A  2F                		dec 	rf
+050B                    DRM_TBClosed:
+050B  F8 F3             		ldi 	30*8+3 										; point to bottom door always
+050D  AF                		plo 	rf
+050E  8E                		glo 	re 											; switch NorthDoor pointer to South Door
+050F  FB 01             		xri 	NorthDoor ^ SouthDoor
+0511  AE                		plo 	re
+0512  FB E4             		xri 	NorthDoor 									; do it twice, till it returns to its original value.
+0514  3A 00             		bnz 	DRM_TBDoor
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;													 Open left and right doors
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0516  F8 58             		ldi 	11*8 										; point RF to west door space
+0518  AF                		plo 	rf
+0519  F8 E7             		ldi 	WestDoor 									; point RE to west door pointer
+051B  AE                		plo 	re
+051C                    DRM_LRDoor:
+051C  0E                		ldn 	re 											; read west door, if zero it's closed
+051D  32 2A             		bz 		DRM_LRClosed
+051F                    DRM_OpenLRDoor:
+051F  F8 00             		ldi 	$00 										; open it
+0521  5F                		str 	rf
+0522  8F                		glo 	rf 											; down one line
+0523  FC 08             		adi 	8
+0525  AF                		plo 	rf
+0526  FF A0             		smi 	20*8 										; until reached the bottom
+0528  3B 1F             		bnf 	DRM_OpenLRDoor
+
+052A                    DRM_LRClosed:
+052A  F8 5F             		ldi 	11*8+7 										; point RF to east door space
+052C  AF                		plo 	rf
+052D  8E                		glo 	re 											; switch west door pointer to east door pointer
+052E  FB 01             		xri 	EastDoor ^ WestDoor
+0530  AE                		plo 	re
+0531  FB E7             		xri 	WestDoor 									; do it twice, till it returns to original value.
+0533  3A 1C             		bnz 	DRM_LRDoor
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;												Draw number of lives lost
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0535  F8 0F             		ldi 	7+8											; point RF to lives draw area
+0537  AF                		plo 	rf
+0538  F8 E8             		ldi 	LivesLost 									; point RE to lives lost
+053A  AE                		plo 	re
+053B  0E                		ldn 	re 											; calculate 3-lost
+053C  FD 03             		sdi 	3
+053E  AD                		plo 	rd 											; save in RD.0
+053F                    DRM_Lives:
+053F  0F                		ldn 	rf 											; set lives marker
+0540  F9 03             		ori 	3
+0542  5F                		str 	rf
+0543  8F                		glo 	rf 											; two rows down
+0544  FC 10             		adi 	16
+0546  AF                		plo 	rf
+0547  2D                		dec 	rd
+0548  8D                		glo 	rd 											; for however many lives.
+0549  3A 3F             		bnz 	DRM_Lives
+
+054B  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;						Reset Seed according to Room positions, breaks R7, returns first Random Number
+                        ;
+                        ;  Runs in R5, returns to R4, drops through to "Random" subroutine below. Need to be in same page.
+                        ; ***************************************************************************************************************************************
+
+054C                    ResetSeed:
+054C  F8 E0             		ldi 	XRoom 										; point R7 to XRoom
+054E  A7                		plo 	r7
+054F  92                		ghi  	r2
+0550  B7                		phi 	r7
+0551  47                		lda 	r7 											; read X Room, bump it
+0552  17                		inc 	r7 											; bump again to Seed1
+0553  FC 7D             		adi 	XAdjustStart
+0555  57                		str 	r7 											; store (modified) in Seed1
+0556  27                		dec 	r7 											; repeat with Y Room and Seed2
+0557  47                		lda 	r7
+0558  17                		inc 	r7
+0559  FC E3             		adi 	YAdjustStart
+055B  57                		str 	r7
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											 Random Number Generator, breaks R7.
+                        ;
+                        ;   Runs in R5, return to R4.
+                        ; ***************************************************************************************************************************************
+
+055C  92                Random:	ghi 	r2 											; point R7 to the Seed Data (2nd byte)
+055D  B7                		phi 	r7
+055E  F8 E3             		ldi 	Seed2
+0560  A7                		plo 	r7
+0561  E7                		sex		r7 											; use R7 as index register
+
+0562  07                		ldn 	r7 											; load the 2nd byte
+0563  F6                		shr 												; shift right into DF
+0564  73                		stxd 												; store and point to first byte
+0565  07                		ldn 	r7 											; rotate DF into it and out
+0566  76                		shrc
+0567  57                		str 	r7
+0568  3B 6F             		bnf 	RN_NoXor
+056A  17                		inc 	r7 											; if LSB was set then xor high byte with $B4
+056B  07                		ldn 	r7
+056C  FB B4             		xri 	$B4
+056E  73                		stxd 												; store it back and fix up RF again.
+056F                    RN_NoXor:
+056F  07                		ldn 	r7 											; re-read the LSB
+0570  17                		inc 	r7
+0571  F4                		add 												; add the high byte.
+
+0572  D4                		sep 	r4 											; and exit.
+0573  30 5C             		br 		Random
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;			Erase the object structure. Initialise the Player, flipping position horizontally or vertically accordingly.
+                        ;
+                        ;	Runs in R4, return to R3
+                        ; ***************************************************************************************************************************************
+
+0575                    InitialiseRoomAndPlayer:
+0575  92                		ghi 	r2 											; set RF to the last object structure byte
+0576  BF                		phi 	rf
+0577  F8 3B             		ldi 	ObjectEnd-1
+0579  AF                		plo 	rf
+057A                    IRM_Clear:													; fill everything with $FF
+057A  EF                		sex 	rf
+057B  F8 FF             		ldi 	$FF
+057D  73                		stxd
+057E  8F                		glo 	rf
+057F  FB 05             		xri 	PlayerObject+ObjectRecordSize-1 			; keep going until reached last byte of player record
+0581  3A 7A             		bnz 	IRM_Clear
+
+0583  73                		stxd 												; +5 graphic drawn zero
+
+0584  0F                		ldn 	rf 											; +4 copy Y
+0585  73                		stxd
+
+0586  0F                		ldn 	rf 											; +3 copy X
+0587  73                		stxd
+
+0588  F8 00             		ldi 	0 											; +2 direction no movement		
+058A  73                		stxd
+058B  F8 03             		ldi 	3 											; +1 speed mask
+058D  73                		stxd
+058E  F8 20             		ldi 	0+32										; object ID = 0 (Player object) and not drawn flag set.
+0590  73                		stxd
+0591  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;										Partial line plotter - xors one row of 3 pixels
+                        ;
+                        ;	On entry, D contains pattern, RF points to the Video RAM to alter.
+                        ;	On exit, RF is up one (e.g. -8) we draw sprites upwards.
+                        ;
+                        ;	Runs in R6. Returns to R5. Breaks RE, Set [R2] to Non-Zero on collision.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0592                    PartialXORPlot:
+0592  30 D0             		br 		PX_Shift0 									; shift right x 0
+0594  30 CF             		br 		PX_Shift1 									; shift right x 1
+0596  30 CE             		br 		PX_Shift2 									; shift right x 2
+0598  30 CD             		br 		PX_Shift3 									; shift right x 3
+059A  30 CC             		br 		PX_Shift4 									; shift right x 4
+059C  30 CB             		br 		PX_Shift5 									; shift right x 5
+059E  30 BD             		br 		PX_Shift6 									; shift right 8, shift left 2.
+
+05A0                    PX_Shift7:													; shift right 8, shift left 1.
+05A0  FE                		shl 												; shift left, store in right half
+05A1  BE                		phi 	re
+05A2  F8 00             		ldi 	0 											; D = DF, store in left half.
+05A4  7E                		shlc
+05A5  AE                		plo 	re
+
+05A6                    PX_XorRE:													; XOR with RE, check collision.
+05A6  EF                		sex 	rf
+
+05A7  8E                		glo 	re 											; check collision.
+05A8  F2                		and
+05A9  32 AC             		bz 		PX_NoCollideLeftPart
+05AB  52                		str 	r2 											; set TOS non zero on collision
+05AC                    PX_NoCollideLeftPart:
+
+05AC  8E                		glo 	re 											; XOR [RF] with RE.0
+05AD  F3                		xor 	
+05AE  5F                		str 	rf
+05AF  1F                		inc 	rf 											; XOR [RF+1] with RE.1
+
+05B0  9E                		ghi 	re 											; check collision.
+05B1  F2                		and
+05B2  32 B5             		bz 		PX_NoCollideRightPart
+05B4  52                		str 	r2 											; set TOS non zero on collision
+05B5                    PX_NoCollideRightPart:
+
+05B5  9E                		ghi 	re
+05B6  F3                		xor
+05B7  5F                		str 	rf
+05B8  8F                		glo 	rf 											; go down one row
+05B9  FC 07             		adi 	7
+05BB  AF                		plo 	rf
+05BC  D5                		sep 	r5 											; and exit
+
+05BD                    PX_Shift6:
+05BD  FE                		shl 												; RE.10 = D >> 8 left 1.
+05BE  BE                		phi 	re
+05BF  F8 00             		ldi 	0
+05C1  7E                		shlc
+05C2  AE                		plo 	re
+05C3  9E                		ghi 	re 											; shift it left once again
+05C4  FE                		shl
+05C5  BE                		phi 	re
+05C6  8E                		glo 	re
+05C7  7E                		shlc
+05C8  AE                		plo 	re
+05C9  30 A6             		br 		PX_XorRE 									; and exclusive OR into video memory.
+
+05CB                    PX_Shift5:													; shift right 6 and xor
+05CB  F6                		shr
+05CC                    PX_Shift4:													; shift right 4 and xor
+05CC  F6                		shr
+05CD                    PX_Shift3:													; shift right 3 and xor
+05CD  F6                		shr
+05CE                    PX_Shift2:													; shift right 2 and xor
+05CE  F6                		shr
+05CF                    PX_Shift1:													; shift right 1 and xor
+05CF  F6                		shr
+05D0                    PX_Shift0:													; shift right 0 and xor
+05D0  EF                		sex 	rf 											; XOR into RF
+05D1  AE                		plo 	re 											; save pattern in RE.0
+05D2  F2                		and 	 											; and with screen
+05D3  32 D6             		bz 		PX_NoCollideSingle 							; skip if zero e.g. no collision
+05D5  52                		str 	r2 											; set TOS non zero on collision
+05D6                    PX_NoCollideSingle:											
+05D6  8E                		glo 	re 											; restore pattern from RE.0
+05D7  F3                		xor
+05D8  5F                		str 	rf
+05D9  8F                		glo 	rf 											; go down one row
+05DA  FC 08             		adi 	8
+05DC  AF                		plo 	rf
+05DD  D5                		sep 	r5 											; and exit
+
+                        ; ***************************************************************************************************************************************
+                        ;														Plot Character in RC
+                        ;
+                        ; Runs in R5, Returns to R4. D set to non-zero on collision with .... something.
+                        ;
+                        ; Subroutine breaks RB.1,RD,RE, uses RF as VideoRAM pointer.
+                        ; ***************************************************************************************************************************************
+
+05DE                    PlotCharacter:
+05DE  1C                		inc 	rc 											; advance to RC[3] which is the X position.
+05DF  1C                		inc 	rc
+05E0  1C                		inc 	rc
+
+05E1  F8 05             		ldi 	>PartialXORPlot 							; R6.1 set to PartialXOR Plot (MSB) throughout.
+05E3  B6                		phi 	r6
+
+05E4  0C                		ldn 	rc 											; read X position
+05E5  FA 07             		ani 	7 											; get the lower 3 bits - the shifting bits.
+05E7  FE                		shl 												; double and add to PartialXORPlot LSB
+05E8  FC 92             		adi 	<PartialXORPlot 							; this is the LSB of the routine address
+05EA  BB                		phi 	rb 											; save in RB.1
+
+05EB  4C                		lda 	rc 											; get X, bump to point to Y RC[4], divide by 8.
+05EC  F6                		shr
+05ED  F6                		shr
+05EE  F6                		shr
+05EF  22                		dec 	r2 											; save X/8 on stack.
+05F0  52                		str 	r2
+05F1  4C                		lda 	rc 											; get Y, bump to point to character data pointer RC[5]
+05F2  FE                		shl
+05F3  FE                		shl
+05F4  FE                		shl 												; multiply by 8
+05F5  E2                		sex 	r2 											; add to X/8
+05F6  F4                		add 	  											; D now = Y*8 + X/8 e.g. the byte position in the screen
+
+05F7  AF                		plo 	rf 											; store in RF (points to video RAM)
+05F8  F8 09             		ldi 	VideoPage
+05FA  BF                		phi 	rf
+
+05FB  0C                		ldn 	rc 											; read character data pointer RC[5]
+05FC  AD                		plo 	rd 											; put in RD, RD is the pixel data source.
+05FD  F8 07             		ldi 	>Graphics 									; Make RD a full 16 bit pointer to graphics.
+05FF  BD                		phi 	rd
+
+0600  F8 00             		ldi 	0
+0602  52                		str 	r2 											; clear top of stack which is the collision flag.
+0603                    PCLoop:
+0603  9B                		ghi 	rb 											; set R6 to the drawer routine.
+0604  A6                		plo 	r6
+0605  4D                		lda 	rd 											; read a graphic byte
+0606  32 0B             		bz 		PCComplete 									; complete if zero
+0608  D6                		sep 	r6 											; draw that pixel out.
+0609  30 03             		br 		PCLoop 										; keep going till more data.
+
+060B                    PCComplete:
+060B  8C                		glo 	rc 											; fix up RC so it points back to the start
+060C  FF 05             		smi 	5
+060E  AC                		plo 	rc
+
+060F  42                		lda 	r2 											; read collision flag off top of stack and fix the stack.
+0610  D4                		sep 	r4 											; and return to R4.
+
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											Object Mover (object pointed to by RC)
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0611                    MoveObject:
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;									Check bit 7 of the ID/Flags is clear, e.g. it is in use
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+0611  0C                		ldn 	rc 											; read RC[0] - ID and Flags
+0612  FE                		shl 												; put bit 7 (not in use) into DF
+0613  3B 16             		bnf 	MO_InUse
+0615  D3                		sep 	r3
+0616                    MO_InUse:
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;						if to be deleted (bit 6), erase and delete, if not drawn yet (bit 5), draw it and exit
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+0616  FE                		shl 												; put bit 6 (deleted) flag into DF.
+0617  33 43             		bdf 	MO_Erase 									; if set, go to erase because you want to delete it.
+0619  FE                		shl 												; put bit 5 (not drawn) into DF.
+061A  33 5F             		bdf 	MO_Redraw
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;							  And the Frame Counter with the speed mask, to see if it is move time
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+061C  1C                		inc 	rc 											; move to RC[1]
+061D  92                		ghi 	r2 											; point RF at the Frame Counter
+061E  BF                		phi 	rf
+061F  F8 F0             		ldi 	FrameCounter
+0621  AF                		plo  	rf
+0622  0F                		ldn 	rf 											; read the Frame Counter
+0623  EC                		sex  	rc 											; and with the speed mask - controls how fast it goes.
+0624  F2                		and
+0625  2C                		dec 	rc 											; fix RC up before carrying on.
+0626  32 29             		bz 		MO_TimeToMove
+0628  D3                		sep 	r3
+0629                    MO_TimeToMove:
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;  			Figure out what direction is required, update it if $FF not returned. If direction = 0 (no move) collision only
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0629  F8 06             		ldi 	>CallVector 								; call the code to get the new direction.
+062B  B6                		phi 	r6
+062C  F8 ED             		ldi 	<CallVector
+062E  A6                		plo 	r6
+062F  F8 08             		ldi 	<VTBL_GetDirection
+0631  D6                		sep 	r6
+0632  AE                		plo 	re 											; save it in RE.0
+
+0633  9C                		ghi 	rc 											; point RF to RC[2], the direction.
+0634  BF                		phi 	rf
+0635  8C                		glo 	rc
+0636  AF                		plo 	rf
+0637  1F                		inc 	rf
+0638  1F                		inc 	rf
+
+0639  8E                		glo 	re 											; look at the returned direction.
+063A  FB FF             		xri 	$FF 										; returned $FF, no change.
+063C  32 40             		bz 		MO_NoUpdateDirection
+063E  8E                		glo 	re 											; copy the returned direction in.
+063F  5F                		str 	rf
+0640                    MO_NoUpdateDirection:
+0640  0F                		ldn 	rf 											; if movement is zero, do nothing other than collision check.
+0641  32 B2             		bz 		MO_CheckCollision
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ; 													Erase the old drawn character
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0643                    MO_Erase:
+0643  F8 05             		ldi 	>PlotCharacter 								; erase the character.
+0645  B5                		phi 	r5
+0646  F8 DE             		ldi 	<PlotCharacter
+0648  A5                		plo 	r5
+0649  D5                		sep 	r5
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;							if character marked to be deleted, then set ID/Flags to all '1' and return
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+064A  0C                		ldn 	rc 											; read the ID + Flags
+064B  FA 40             		ani 	$40 										; is the delete flag set ?
+064D  32 53             		bz 		MO_DontDelete 								; skip if not deleting.
+
+064F  F8 FF             		ldi 	$FF 										; set the flags to $FF e.g. deleted object
+0651  5C                		str 	rc
+0652  D3                		sep 	r3 											; and return to caller.
+
+0653                    MO_DontDelete:
+                        	
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ; 												Move in the requested direction
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+0653  F8 06             		ldi 	>MoveObjectPosition 						; set R5 to point to the object moving code
+0655  B5                		phi 	r5
+0656  F8 BC             		ldi 	<MoveObjectPosition
+0658  A5                		plo 	r5		
+0659  1C                		inc 	rc 											; read the current direction from RC[2]
+065A  1C                		inc 	rc
+065B  0C                		ldn 	rc
+065C  2C                		dec 	rc
+065D  2C                		dec 	rc
+065E  D5                		sep 	r5 											; and move it.
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ; 						Get the graphic we want to use for drawing, and save that, then draw it in the new place
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+065F                    MO_Redraw: 													; redraw in its new/old position.
+065F  F8 06             		ldi 	>CallVector 								; call the code to get the graphic character
+0661  B6                		phi 	r6
+0662  F8 ED             		ldi 	<CallVector
+0664  A6                		plo 	r6
+0665  F8 12             		ldi 	<VTBL_GetGraphicCharacter
+0667  D6                		sep 	r6
+0668  AE                		plo 	re 											; save in RE.0
+0669  9C                		ghi 	rc 											; set RF = RC[5], the graphic pointer
+066A  BF                		phi 	rf
+066B  8C                		glo 	rc
+066C  FC 05             		adi 	5
+066E  AF                		plo 	rf
+066F  8E                		glo 	re 											; restore from RE.0
+0670  5F                		str 	rf 											; save in RF.0 table.
+
+0671  F8 05             		ldi 	>PlotCharacter 								; now redraw it in the new position.
+0673  B5                		phi 	r5
+0674  F8 DE             		ldi 	<PlotCharacter
+0676  A5                		plo 	r5
+0677  D5                		sep 	r5
+0678  32 AE             		bz 		MO_ClearNotDrawn 							; if no collision clear the 'not drawn' flag.
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;					if Player collided, must've died. if Missile collided, delete. if robot collided, undo move.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+067A                    MO_Collide:
+067A  0C                		ldn 	rc 											; get the ID number
+067B  FA 0F             		ani 	15
+
+067D  32 A7             		bz 		MO_PlayerHitFrame 							; if zero then the player has hit something, life over.
+067F  FB 01             		xri 	1 											; if it is ID #1 (bullet) then delete it but keep data for collision.
+0681  32 A1             		bz 		MO_DeleteMissile 							; otherwise move it back.
+
+0683                    MO_MoveBackwards:
+0683  F8 05             		ldi 	>PlotCharacter 								; now erase it in the new position
+0685  B5                		phi 	r5
+0686  F8 DE             		ldi 	<PlotCharacter
+0688  A5                		plo 	r5
+0689  D5                		sep 	r5
+
+068A  F8 06             		ldi 	>MoveObjectPosition 						; set R5 to point to the object moving code
+068C  B5                		phi 	r5
+068D  F8 BC             		ldi 	<MoveObjectPosition
+068F  A5                		plo 	r5		
+0690  1C                		inc 	rc 											; read the current direction from RC[2]
+0691  1C                		inc 	rc
+0692  0C                		ldn 	rc
+0693  FD 0A             		sdi 	10 											; move it backwards i.e. to where it was.
+0695  2C                		dec 	rc
+0696  2C                		dec 	rc
+0697  D5                		sep 	r5 											; and move it.
+
+0698  F8 05             		ldi 	>PlotCharacter 								; now redraw it in the original position.
+069A  B5                		phi 	r5
+069B  F8 DE             		ldi 	<PlotCharacter
+069D  A5                		plo 	r5
+069E  D5                		sep 	r5
+069F  30 AE             		br 		MO_ClearNotDrawn 							; go on to the next phase.
+
+06A1                    MO_DeleteMissile:
+06A1  0C                		ldn 	rc
+06A2  F9 40             		ori 	$40
+06A4  5C                		str 	rc
+06A5  30 AE             		br 		MO_ClearNotDrawn
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ;															Player died
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+06A7                    MO_PlayerHitFrame: 											; player hit something, die now.
+06A7  F8 0C             		ldi 	>LifeLost
+06A9  B3                		phi 	r3
+06AA  F8 B4             		ldi 	<LifeLost
+06AC  A3                		plo 	r3
+06AD  D3                		sep 	r3
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ; 										    	Collision okay, clear not drawn bit.
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+06AE                    MO_ClearNotDrawn:
+06AE  0C                		ldn 	rc 											; clear the 'not drawn' flag as it now will be until deleted.
+06AF  FA DF             		ani 	$FF-$20
+06B1  5C                		str 	rc
+
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+                        ; 					 Call the collision testing code (missiles vs players/robots) or firing code (player/robot)
+                        ; ---------------------------------------------------------------------------------------------------------------------------------------
+
+06B2                    MO_CheckCollision:
+06B2  F8 06             		ldi 	>CallVector 								; call collision testing code.
+06B4  B6                		phi 	r6
+06B5  F8 ED             		ldi 	<CallVector
+06B7  A6                		plo 	r6
+06B8  F8 1C             		ldi 	<VTBL_CollisionCheckOrFire
+06BA  D6                		sep 	r6
+
+06BB  D3                		sep 	r3 											; and finally exit.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;												Adjust object at RC in direction D
+                        ;
+                        ; ***************************************************************************************************************************************
+
+06BC                    MoveObjectPosition:
+06BC  FA 0F             		ani 	15 											; lower 4 bits only.
+06BE  FE                		shl 												; RF to point to the offset table + D x 2
+06BF  FC D7             		adi 	<XYOffsetTable 								
+06C1  AF                		plo 	rf
+06C2  F8 06             		ldi 	>XYOffsetTable
+06C4  BF                		phi 	rf
+
+06C5  EC                		sex 	rc 											; RC as index
+06C6  1C                		inc 	rc 											; point to RC[3] , x position
+06C7  1C                		inc 	rc
+06C8  1C                		inc 	rc
+
+06C9  4F                		lda 	rf 											; read X offset 	
+06CA  F4                		add  												; add to RC[3]
+06CB  5C                		str 	rc
+06CC  1C                		inc 	rc 											; point to RC[4], y position
+06CD  0F                		ldn 	rf 											; read Y offset
+06CE  F4                		add 												; add to RC[4]
+06CF  5C                		str 	rc
+06D0  8C                		glo 	rc 											; set RC[4] back to RC[0]
+06D1  FF 04             		smi 	4
+06D3  AC                		plo 	rc
+06D4  D4                		sep 	r4
+06D5  30 BC             		br  	MoveObjectPosition 							; make reentrant
+
+06D7                    XYOffsetTable:
+06D7  0000              		.db 	0,0 										; 0
+06D9  FFFF00FF 01FF     		.db 	-1,-1,  0,-1,   1,-1 						; 1 2 3
+06DF  FF000000 0100     		.db 	-1,0,   0,0,	1,0 						; 4 5 6
+06E5  FF010001 0101     		.db 	-1,1,	0,1, 	1,1 						; 7 8 9
+06EB  0000              		.db 	0,0 										; 10
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;			On entry, P = 6 and D points to a table. Load the vector into R5, and set P = 5 - vectored code run in P5, return to P4
+                        ;
+                        ; ***************************************************************************************************************************************
+
+06ED                    CallVector:
+06ED  22                		dec 	r2 											; save the table LSB on the stack
+06EE  52                		str 	r2
+06EF  0C                		ldn 	rc 											; get ID bits
+06F0  FA 0F             		ani 	15
+06F2  FE                		shl 												; double
+06F3  E2                		sex 	r2 											; add to table LSB
+06F4  F4                		add
+06F5  AF                		plo 	rf 											; put in RF.0
+06F6  F8 07             		ldi	 	>VTBL_GetDirection 							; point to tables, all in same page
+06F8  BF                		phi 	rf
+06F9  12                		inc 	r2 											; fix up stack
+06FA  4F                		lda 	rf 											; read MSB into R5.1
+06FB  B5                		phi 	r5
+06FC  0F                		ldn 	rf 											; read LSB into R5.0
+06FD  A5                		plo 	r5
+06FE  D5                		sep 	r5 											; and jump.
+
+06FF                    Continue: 													; continue is a no-op e.g. don't change direction.
+06FF  F8 FF             		ldi 	$FF
+0701  D4                		sep 	r4
+0702                    GetMissileGraphic:	
+0702  F8 ED             		ldi 	<Graphics_Missile
+0704  D4                		sep 	r4
+0705                    GetRobotGraphic:
+0705  F8 EF             		ldi 	<Graphics_Robot
+0707  D4                		sep 	r4
+
+0708                    VTBL_GetDirection:
+0708  074706FF 0CFA0CFA 		.dw 	GetPlayerDirection,Continue,ChasePlayer, ChasePlayer, ChasePlayer
+0710  0CFA
+
+0712                    VTBL_GetGraphicCharacter:
+0712  07500702 07050705 		.dw 	GetPlayerGraphic,GetMissileGraphic,GetRobotGraphic,GetRobotGraphic,GetRobotGraphic
+071A  0705
+
+071C                    VTBL_CollisionCheckOrFire:
+071C  077307BC 06FF077D 		.dw 	CheckPlayerFire,CollideMissile,Continue,LaunchMissile,LaunchMissile
+0724  077D
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;												Update Keyboard State, also returned in D
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0726                    UpdateKeyboardState:
+0726  F8 09             		ldi 	9 											; set RF.0 to 9
+0728  AF                		plo 	rf
+0729                    UKSScan:
+0729  22                		dec 	r2 											; put RF.0 on TOS.
+072A  8F                		glo 	rf
+072B  52                		str 	r2
+072C  E2                		sex 	r2 											; put into keyboard latch.
+072D  62                		out 	2
+072E  36 34             		b3 		UKSFound 									; if EF3 set then found a key pressed.
+0730  2F                		dec 	rf
+0731  8F                		glo 	rf
+0732  3A 29             		bnz 	UKSScan 									; try all of them
+0734                    UKSFound: 													; at this point RF.0 is 0 if no key pressed, 1 if pressed.
+0734  F8 00             		ldi 	0 											; set keyboard latch to zero.
+0736  22                		dec 	r2
+0737  52                		str 	r2
+0738  62                		out 	2
+0739  3F 3F             		bn4 	UKSNoFire 									; skip if Keypad 2 key 0 not pressed
+073B  8F                		glo 	rf  										; set bit 7 (the fire bit)
+073C  F9 80             		ori 	$80
+073E  AF                		plo 	rf
+073F                    UKSNoFire:
+073F  92                		ghi 	r2 											; point RE to the keyboard state variable
+0740  BE                		phi 	re
+0741  F8 F1             		ldi 	KeyboardState
+0743  AE                		plo 	re
+0744  8F                		glo 	rf 											; save the result there
+0745  5E                		str 	re 	
+0746  D3                		sep 	r3
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Get Player Direction Move
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0747                    GetPlayerDirection:
+0747  92                		ghi 	r2 											; point RF to KeyboardState
+0748  BF                		phi 	rf
+0749  F8 F1             		ldi 	KeyboardState
+074B  AF                		plo 	rf
+074C  0F                		ldn 	rf 											; read Keyboard State
+074D  FA 0F             		ani 	15 											; only interested in bits 0-3
+074F  D4                		sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ;														Get Player Graphic
+                        ; ***************************************************************************************************************************************
+
+0750                    GetPlayerGraphic:
+0750  92                		ghi 	r2 											; read keyboard state
+0751  BF                		phi 	rf
+0752  F8 F1             		ldi 	<KeyboardState
+0754  AF                		plo 	rf
+0755  0F                		ldn 	rf
+0756  FA 0F             		ani 	15 											; bits 0-3
+0758  FE                		shl 												; x 2, add XYOffsetTable
+0759  FC D7             		adi 	<XYOffsetTable
+075B  AF                		plo 	rf
+075C  F8 06             		ldi 	>XYOffsetTable
+075E  BF                		phi 	rf
+075F  0F                		ldn 	rf 											; read X offset
+0760  FE                		shl 												; sign bit in DF
+0761  F8 D9             		ldi 	<Graphics_Left1 							; pick graphic based on sign bit
+0763  33 67             		bdf		GPG_Left
+0765  F8 E3             		ldi 	<Graphics_Right1
+0767                    GPG_Left:
+0767  AF                		plo 	rf
+0768  89                		glo 	r9 											; use S2 BIOS Clock to pick which animation to use.
+0769  FA 04             		ani 	4
+076B  32 71             		bz 		GPG_NotAlternate
+076D  8F                		glo 	rf
+076E  FC 05             		adi 	5
+0770  AF                		plo 	rf
+0771                    GPG_NotAlternate:
+0771  8F                		glo 	rf
+0772  D4                		sep 	r4
+
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Check Player Fire
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0773                    CheckPlayerFire:
+0773  92                		ghi 	r2 											; point RF to keyboard state
+0774  BF                		phi 	rf
+0775  F8 F1             		ldi 	<KeyboardState
+0777  AF                		plo 	rf
+0778  0F                		ldn 	rf 											; read keyboard
+0779  FE                		shl 												; fire button into DF
+077A  33 7D             		bdf 	LaunchMissile
+077C  D4                		sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													  Launch Missile from RC
+                        ;
+                        ; ***************************************************************************************************************************************
+
+077D                    LaunchMissile:
+077D  9C                		ghi 	rc 											; point RD to Missile that's being launched
+077E  BD                		phi 	rd
+077F  8C                		glo 	rc 											
+0780  FC 06             		adi 	ObjectRecordSize
+0782  AD                		plo 	rd
+
+0783  0D                		ldn 	rd 											; check if already in use, if so exit.
+0784  FE                		shl
+0785  3B B2             		bnf 	LM_Exit
+
+0787  F8 21             		ldi 	1+$20 										; object ID #1, not drawn in RD[0]
+0789  5D                		str 	rd
+078A  1D                		inc 	rd
+078B  F8 00             		ldi  	0 											; speed mask RD[1]
+078D  5D                		str 	rd
+078E  1D                		inc 	rd
+
+078F  1C                		inc 	rc 											; point RC to direction RC[2]
+0790  1C                		inc 	rc
+0791  4C                		lda 	rc 											; read it and bump it.
+0792  32 B3             		bz 		LM_Cancel 									; if zero cancel missile launch.
+0794  5D                		str 	rd 											; save in RD[2]
+0795  1D                		inc 	rd
+
+
+0796  FE                		shl 												; double direction, add XYOffsetTable
+0797  FC D7             		adi 	<XYOffsetTable
+0799  AF                		plo 	rf 											; make RF point to offset data
+079A  F8 06             		ldi 	>XYOffsetTable
+079C  BF                		phi 	rf
+
+079D  0C                		ldn 	rc 											; read RC[3] (X Position)
+079E  EF                		sex 	rf
+079F  F4                		add 												; add 2 x direction to it
+07A0  F4                		add
+07A1  FC 01             		adi 	1
+07A3  5D                		str 	rd 											; save in RD[3]
+
+07A4  1C                		inc 	rc 											; point to RC[4],RD[4] and Y offset
+07A5  1D                		inc 	rd
+07A6  1F                		inc 	rf
+
+07A7  0C                		ldn 	rc 											; RD[4] = RC[4] + 3 x dy
+07A8  F4                		add
+07A9  F4                		add
+07AA  F4                		add
+07AB  FC 02             		adi 	2
+07AD  5D                		str 	rd
+
+07AE  8C                		glo 	rc 											; fix RC back
+07AF  FF 04             		smi 	4
+07B1  AC                		plo 	rc
+07B2                    LM_Exit:
+07B2  D4                		sep 	r4	
+
+07B3                    LM_Cancel: 													; missile launch cancelled
+07B3  2D                		dec 	rd
+07B4  2D                		dec 	rd
+07B5  F8 FF             		ldi 	$FF 										; write $FF to RD[0] no object
+07B7  5D                		str 	rd
+07B8  2C                		dec 	rc 											; fix up RC
+07B9  2C                		dec 	rc
+07BA  2C                		dec 	rc
+07BB  D4                		sep 	r4 											; and exit.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													  Missile collision check
+                        ;
+                        ; ***************************************************************************************************************************************
+
+07BC                    CollideMissile:
+07BC  9C                		ghi 	rc 											; RF = RC + 3
+07BD  BF                		phi 	rf
+07BE  8C                		glo 	rc
+07BF  FC 03             		adi 	3
+07C1  AF                		plo 	rf 											; RF points to X
+07C2  4F                		lda 	rf 											
+07C3  FA C0             		ani 	$C0
+07C5  3A D4             		bnz 	CM_Delete
+07C7  0F                		ldn 	rf
+07C8  FA E0             		ani 	$E0
+07CA  3A D4             		bnz 	CM_Delete
+07CC  F8 0D             		ldi 	>CheckHitPlayerRobotObjects  				; check for collisions with player or robots.
+07CE  B6                		phi 	r6
+07CF  F8 1E             		ldi 	<CheckHitPlayerRobotObjects
+07D1  A6                		plo 	r6
+07D2  D6                		sep 	r6
+07D3  D4                		sep 	r4
+07D4                    CM_Delete:
+07D4  0C                		ldn 	rc
+07D5  F9 40             		ori 	$40
+07D7  5C                		str 	rc
+07D8  D4                		sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;															Berzerk Graphics
+                        ;
+                        ; ***************************************************************************************************************************************
+
+07D9                    Graphics:
+
+07D9                    Graphics_Left1:
+07D9  40C04040 00       		.db 	$40,$C0,$40,$40,0
+07DE                    Graphics_Left2:
+07DE  40C040A0 00       		.db 	$40,$C0,$40,$A0,0
+07E3                    Graphics_Right1:
+07E3  40604040 00       		.db 	$40,$60,$40,$40,0
+07E8                    Graphics_Right2:
+07E8  406040A0 00       		.db 	$40,$60,$40,$A0,0
+07ED                    Graphics_Missile:
+07ED  8000              		.db 	$80,0
+07EF                    Graphics_Robot:
+07EF  40A0E0A0 00       		.db 	$40,$A0,$E0,$A0,0
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;											Write byte D to RE. Add 8 to RE
+                        ;
+                        ; ***************************************************************************************************************************************
+
+07F4                    WriteDisplayByte:
+07F4  5E                		str 	re 											; save result
+07F5  8E                		glo 	re 											; down one row
+07F6  FC 08             		adi 	8
+07F8  AE                		plo 	re
+07F9  D3                		sep 	r3
+07FA  30 F4             		br 		WriteDisplayByte
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														SECOND ROM SECTION
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0C00                        	.org 	0C00h
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;															Game starts here
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0C00                    StartGame:
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;														Come back here when life lost
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+0C00  92                		ghi 	r2 											; reset the player object position to something sensible
+0C01  BF                		phi 	rf
+0C02  F8 03             		ldi 	PlayerObject+3
+0C04  AF                		plo 	rf
+0C05  F8 0D             		ldi 	13
+0C07  5F                		str 	rf
+0C08  1F                		inc 	rf
+0C09  5F                		str 	rf
+0C0A  F8 E0             		ldi 	XRoom 										; reset the start room
+0C0C  AF                		plo 	rf
+0C0D  F8 00             		ldi 	0
+0C0F  5F                		str 	rf
+0C10  1F                		inc 	rf
+0C11  5F                		str 	rf
+0C12                    WaitKey5:
+0C12  F8 07             		ldi 	>UpdateKeyboardState 						; update keyboard state.
+0C14  B4                		phi 	r4
+0C15  F8 26             		ldi 	<UpdateKeyboardState
+0C17  A4                		plo 	r4
+0C18  D4                		sep 	r4
+0C19  FB 05             		xri 	5 											; keep going till key 5 pressed.
+0C1B  3A 12             		bnz 	WaitKey5
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;								     Come back here when re-entering a new rooom - initialise and draw
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+0C1D                    NewRoom:
+0C1D  F8 08             		ldi 	RamPage 									; reset the stack.
+0C1F  B2                		phi 	r2
+0C20  F8 FF             		ldi 	$FF
+0C22  A2                		plo 	r2
+
+0C23  F8 05             		ldi 	>InitialiseRoomAndPlayer 					; re-initialise a room
+0C25  B4                		phi 	r4
+0C26  F8 75             		ldi 	<InitialiseRoomAndPlayer
+0C28  A4                		plo 	r4
+0C29  D4                		sep 	r4
+
+0C2A  F8 04                 	ldi 	>DrawRoom 									; draw the room.
+0C2C  B4                    	phi 	r4
+0C2D  F8 02                 	ldi 	<DrawRoom
+0C2F  A4                    	plo 	r4
+0C30  D4                    	sep 	r4
+
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;															Create Robots
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+0C31  92                		ghi 	r2 											; point RF to objects where can create robots
+0C32  BF                		phi 	rf
+0C33  F8 0C             		ldi 	ObjectStart+ObjectRecordSize*2
+0C35  AF                		plo 	rf
+0C36  F8 0D             		ldi 	>CreateRobot 								; point R4 to create robot code.
+0C38  B4                		phi 	r4
+0C39  F8 89             		ldi 	<CreateRobot
+0C3B  A4                		plo 	r4
+
+0C3C  F8 02             		ldi 	2 											; create various robot types 2,3 and 4.
+0C3E  D4                		sep 	r4
+0C3F  F8 03             		ldi 	3
+0C41  D4                		sep 	r4
+0C42  F8 04             		ldi 	4
+0C44  D4                		sep 	r4
+
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;	 														MAIN LOOP
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+
+0C45                    MainLoop:
+0C45  F8 07             		ldi 	>UpdateKeyboardState 						; update keyboard state.
+0C47  B4                		phi 	r4
+0C48  F8 26             		ldi 	<UpdateKeyboardState
+0C4A  A4                		plo 	r4
+0C4B  D4                		sep 	r4
+
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;													Move/Check all objects
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+
+0C4C  F8 00             		ldi 	ObjectStart 								; point RC to object start
+0C4E  AC                		plo 	rc
+0C4F  92                		ghi 	r2
+0C50  BC                		phi 	rc
+
+0C51                    ObjectLoop:
+0C51  F8 06             		ldi 	>MoveObject 								; move object
+0C53  B4                		phi 	r4
+0C54  F8 11             		ldi 	<MoveObject
+0C56  A4                		plo 	r4
+0C57  D4                		sep 	r4
+
+0C58  8C                		glo 	rc 											; go to next object.
+0C59  FC 06             		adi 	ObjectRecordSize
+0C5B  AC                		plo 	rc
+0C5C  FB 3C             		xri 	ObjectEnd 									; loop back if not at end.
+0C5E  3A 51             		bnz 	ObjectLoop
+
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;											Increment the frame counter (used for speed)
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+
+0C60  F8 F0             		ldi 	FrameCounter 								; bump the frame counter
+0C62  AC                		plo 	rc
+0C63  0C                		ldn 	rc
+0C64  FC 01             		adi 	1
+0C66  5C                		str 	rc
+
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;												Check to see if exited through doors
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+
+0C67  F8 03             		ldi 	PlayerObject+3 								; point RC to Player.X
+0C69  AC                		plo 	rc
+0C6A  92                		ghi 	r2 											; point RD to XRoom
+0C6B  BD                		phi 	rd
+0C6C  F8 E0             		ldi 	XRoom
+0C6E  AD                		plo 	rd 											
+0C6F  0C                		ldn 	rc  										; read RC (Player X)
+0C70  32 A3             		bz 		MoveLeftRoom
+0C72  FB 3A             		xri 	$3A
+0C74  32 9F             		bz 		MoveRightRoom
+0C76  1C                		inc 	rc 											; point RC to Player Y
+0C77  1D                		inc 	rd 											; point RD to YRoom
+0C78  0C                		ldn  	rc 											; read RC (Player Y)
+0C79  32 8E             		bz 		MoveUpRoom
+0C7B  FB 1B             		xri 	$1B
+0C7D  32 8A             		bz 		MoveDownRoom
+
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ; 												Synchronise with RCAS2 Timer Counter
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+
+0C7F                    Synchronise:
+0C7F  F8 CE             		ldi 	Studio2SyncTimer							; synchronise and reset
+0C81  AC                		plo 	rc
+0C82  0C                		ldn 	rc
+0C83  3A 7F             		bnz 	Synchronise
+0C85  F8 03             		ldi 	3*1
+0C87  5C                		str 	rc
+
+0C88  30 45             		br 		MainLoop
+
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;													Handle vertical moves (room->room)
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+
+0C8A                    MoveDownRoom:
+0C8A  F8 01             		ldi 	1
+0C8C  30 90             		br 		MoveVRoom
+0C8E                    MoveUpRoom:
+0C8E  F8 FF             		ldi 	$FF
+0C90                    MoveVRoom: 													; add offset to RD (points to YRoom)
+0C90  AE                		plo 	re
+0C91  ED                		sex 	rd
+0C92  F4                		add
+0C93  5D                		str 	rd
+0C94  8E                		glo 	re
+0C95  FE                		shl
+0C96  F8 01             		ldi 	1
+0C98  3B 9C             		bnf 	MoveVRoom2
+0C9A  F8 1A             		ldi 	26
+0C9C                    MoveVRoom2:
+0C9C  5C                		str 	rc
+0C9D  30 1D             		br 		NewRoom
+
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+                        ;												Handle horizontal moves (room->room)
+                        ; --------------------------------------------------------------------------------------------------------------------------------------
+
+0C9F                    MoveRightRoom:
+0C9F  F8 01             		ldi 	1
+0CA1  30 A5             		br 		MoveHRoom
+0CA3                    MoveLeftRoom:
+0CA3  F8 FF             		ldi 	$FF
+0CA5                    MoveHRoom: 													; add offset to RD (points to XRoom)
+0CA5  AE                		plo 	re
+0CA6  ED                		sex 	rd
+0CA7  F4                		add
+0CA8  5D                		str 	rd
+0CA9  8E                		glo 	re
+0CAA  FE                		shl
+0CAB  F8 02             		ldi 	2
+0CAD  3B B1             		bnf 	MoveHRoom2
+0CAF  F8 38             		ldi 	$38
+0CB1                    MoveHRoom2:
+0CB1  5C                		str 	rc
+
+0CB2  30 1D             		br 		NewRoom
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;														Dead if reached here.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0CB4                    LifeLost:
+0CB4  92                		ghi 	r2 											; point RF to lives lost
+0CB5  BF                		phi 	rf
+0CB6  F8 E8             		ldi 	LivesLost
+0CB8  AF                		plo 	rf
+0CB9  0F                		ldn 	rf 											; bump lives lost
+0CBA  FC 01             		adi 	1
+0CBC  5F                		str 	rf
+0CBD  FB 03             		xri 	3 											; lost 3 lives, if not, try again
+0CBF  3A 00             		bnz  	StartGame
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;															Display Score
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0CC1  92                		ghi 	r2 											; point RD to the score.
+0CC2  BD                		phi 	rd
+0CC3  F8 E9             		ldi 	Score
+0CC5  AD                		plo 	rd
+0CC6  F8 06             		ldi 	6 											; make 3 LSBs of E 110 (screen position)
+0CC8  AE                		plo 	re
+0CC9  F8 07             		ldi 	>WriteDisplayByte 							; point RA to the byte-writer
+0CCB  BA                		phi 	ra
+0CCC  F8 F4             		ldi 	<WriteDisplayByte
+0CCE  AA                		plo 	ra
+
+0CCF                    ScoreWriteLoop:
+0CCF  8E                		glo 	re 											; convert 3 LSBs of RE to screen address
+0CD0  FA 07             		ani 	7
+0CD2  FC 58             		adi 	128-40
+0CD4  AE                		plo 	re
+0CD5  F8 09             		ldi 	VideoPage 									; put in video page
+0CD7  BE                		phi 	re
+
+0CD8  F8 00             		ldi		$00
+0CDA  DA                		sep 	ra
+
+0CDB  4D                		lda 	rd 											; read next score digit
+0CDC  FC 10             		adi 	$10 										; score table offset in BIOS
+0CDE  A4                		plo 	r4
+0CDF  F8 02             		ldi 	$02 										; read from $210+n
+0CE1  B4                		phi 	r4
+0CE2  04                		ldn 	r4 											; into D, the new offset
+0CE3  A4                		plo 	r4 											; put into R4, R4 now contains 5 rows graphic data
+
+0CE4  F8 05             		ldi 	5 											; set R5.0 to 6
+0CE6  A5                		plo 	r5
+0CE7                    OutputChar:
+0CE7  44                		lda 	r4 											; read character and advance
+0CE8  F6                		shr 												; centre in byte
+0CE9  F6                		shr
+0CEA  DA                		sep 	ra 											; output it
+0CEB  25                		dec 	r5 											; decrement counter
+0CEC  85                		glo 	r5
+0CED  3A E7             		bnz 	OutputChar 									; loop back if nonzero
+
+0CEF  F8 00             		ldi		$00
+0CF1  DA                		sep 	ra
+
+0CF2  2E                		dec 	re 											; previous value of 3 LSBs.
+0CF3  8E                		glo 	re
+0CF4  FA 07             		ani 	7
+0CF6  3A CF             		bnz 	ScoreWriteLoop
+
+0CF8  30 F8             Halt:	br 		Halt 										; game over, stop forever.
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;													Make object @RC chase the player
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0CFA                    ChasePlayer:
+0CFA  9C                		ghi 	rc 											; point RF to RC+3 X Position.
+0CFB  BF                		phi 	rf 											; point RE to PlayerObject+3
+0CFC  BE                		phi 	re
+0CFD  8C                		glo 	rc
+0CFE  FC 03             		adi 	3
+0D00  AF                		plo 	rf
+0D01  F8 03             		ldi 	PlayerObject+3
+0D03  AE                		plo 	re
+0D04  EF                		sex 	rf
+
+0D05  89                		glo 	r9 											; check bit 4 of the sync counter
+0D06  FA 10             		ani 	$10
+0D08  32 15             		bz 		CP_Horizontal
+
+0D0A  1E                		inc 	re 											; point to Y coordinates
+0D0B  1F                		inc 	rf
+0D0C  0E                		ldn 	re
+0D0D  F7                		sm
+0D0E  F8 02             		ldi 	2
+0D10  3B 1D             		bnf 	CP_1
+0D12  F8 08             		ldi 	8
+0D14  D4                		sep 	r4
+
+0D15                    CP_Horizontal:
+0D15  0E                		ldn 	re 											; calculate Player Object Coord - Object Coord
+0D16  F7                		sm
+0D17  F8 04             		ldi 	4
+0D19  3B 1D             		bnf 	CP_1										; if >= return 4 (left) else return 6 (right)
+0D1B  F8 06             		ldi 	6
+0D1D  D4                CP_1:	sep 	r4
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;			Check to see if missile object at RC has collided with a Player or a Robot. If it has delete both (set delete flags)
+                        ;			Jump to lost-life code if required, add score if required.
+                        ;
+                        ; Runs in R6, Returns to R5, must preserve RC. May crash out if player dies.
+                        ; ***************************************************************************************************************************************
+
+0D1E                    CheckHitPlayerRobotObjects:
+0D1E  9C                		ghi 	rc 											; RD <- RC+3 e.g. x position of missile
+0D1F  BD                		phi 	rd
+0D20  8C                		glo 	rc
+0D21  FC 03             		adi 	3
+0D23  AD                		plo 	rd
+0D24  92                		ghi 	r2 											; RE points to the Object List
+0D25  BE                		phi 	re 	
+0D26  F8 00             		ldi 	ObjectStart
+0D28  AE                		plo 	re
+0D29                    CHPRO_Loop:
+0D29  0E                		ldn 	re 											; get ID/Flags for Object being tested
+0D2A  FE                		shl 												; check in use flag.
+0D2B  33 56             		bdf 	CHPRO_Next 									; skip if not in use.
+0D2D  0E                		ldn 	re 											; get ID
+0D2E  FA 0F             		ani 	15 											
+0D30  FB 01             		xri 	1 											; if missile don't check.
+0D32  32 56             		bz 		CHPRO_Next
+
+0D34  9E                		ghi 	re 											; point RF to x position.
+0D35  BF                		phi 	rf
+0D36  8E                		glo 	re
+0D37  FC 03             		adi 	3
+0D39  AF                		plo 	rf
+0D3A  EF                		sex 	rf
+
+0D3B  0D                		ldn 	rd 											; check |missile.X - object.X|
+0D3C  FF 01             		smi 	1
+0D3E  F7                		sm
+0D3F  33 43             		bdf 	CHPRO_1
+0D41  FD 00             		sdi 	0
+0D43  FF 02             CHPRO_1:smi 	2 											; check that value is < 2
+0D45  33 56             		bdf 	CHPRO_Next
+
+0D47  1D                		inc 	rd 											; calculate |missile.Y - object.Y|
+0D48  1F                		inc 	rf
+0D49  0D                		ldn 	rd
+0D4A  FF 02             		smi 	2
+0D4C  F7                		sm
+0D4D  2D                		dec 	rd
+0D4E  33 52             		bdf 	CHPRO_2
+0D50  FD 00             		sdi 	0
+0D52  FF 03             CHPRO_2:smi 	3
+0D54  3B 5F             		bnf 	CHPRO_Hit
+
+0D56                    CHPRO_Next:
+0D56  8E                		glo 	re 											; go to next one
+0D57  FC 06             		adi 	ObjectRecordSize
+0D59  AE                		plo 	re
+0D5A  FB 3C             		xri 	ObjectEnd 									; loop back if not reached the end.
+0D5C  3A 29             		bnz 	CHPRO_Loop
+0D5E  D5                		sep 	r5
+
+0D5F                    CHPRO_Hit:
+0D5F  0C                		ldn 	rc 											; set delete on missile
+0D60  F9 40             		ori 	$40
+0D62  5C                		str 	rc
+0D63  0E                		ldn 	re 											; set delete on object
+0D64  F9 40             		ori 	$40
+0D66  5E                		str 	re
+0D67  8E                		glo 	re 											; did we hit the player object
+0D68  FB 00             		xri 	PlayerObject
+0D6A  3A 73             		bnz		CHPRO_HitRobot
+
+0D6C  F8 0C             		ldi 	>LifeLost 									; lost a life.
+0D6E  B3                		phi 	r3
+0D6F  F8 B4             		ldi 	<LifeLost
+0D71  A3                		plo 	r3
+0D72  D3                		sep 	r3
+
+0D73                    CHPRO_HitRobot:
+0D73  F8 EA             		ldi 	Score+1 									; RF points to score+1
+0D75  AF                		plo 	rf
+0D76  0E                		ldn 	re 											; Get object ID 2-4
+0D77  FA 0F             		ani 	15
+0D79  FF 01             		smi 	1 											; now 1,2 or 3 representing 10,20,30 points
+0D7B                    CHPRO_BumpScore:
+0D7B  EF                		sex 	rf 											; add to the current digit.
+0D7C  F4                		add
+0D7D  5F                		str 	rf
+0D7E  FF 0A             		smi 	10 											; if < 10 then no carry out to next digit
+0D80  3B 88             		bnf 	CHPRO_Exit
+0D82  5F                		str 	rf 											; save modulo 10 value
+0D83  F8 01             		ldi 	1 											; carry 1 forward.
+0D85  1F                		inc 	rf
+0D86  30 7B             		br 		CHPRO_BumpScore
+0D88                    CHPRO_Exit:
+0D88  D5                		sep 	r5
+
+                        ; ***************************************************************************************************************************************
+                        ;	
+                        ;											Create Robots of type D at position RF.
+                        ;
+                        ; ***************************************************************************************************************************************
+
+0D89                    CreateRobot:
+0D89  BE                		phi 	re 											; save type in RE.1
+0D8A  F8 05             		ldi 	>Random 									; random in R5
+0D8C  B5                		phi 	r5
+0D8D  F8 5C             		ldi 	<Random
+0D8F  A5                		plo 	r5
+0D90  D5                		sep 	r5 											; random number
+0D91  FA 03             		ani 	3 											; from 0-3 robots
+0D93  FC 01             		adi 	1 											; from 1-4 robots
+0D95  AE                		plo 	re 											; save in RE.0
+0D96                    CRBT_Loop:
+0D96  8F                		glo 	rf 											; reached end of storage space
+0D97  FF 30             		smi 	ObjectEnd-ObjectRecordSize*2
+0D99  33 F9             		bdf		CRBT_Exit 									; if not enough space for two objects then exit.
+0D9B  9E                		ghi 	re 											; get type
+0D9C  F9 20             		ori 	$20 										; set not-drawn-yet flag
+0D9E  5F                		str 	rf 											; write to ID/Flags[0] and bump
+0D9F  1F                		inc 	rf
+
+0DA0  9E                		ghi 	re 											; type 2,3,4
+0DA1  FC FC             		adi 	252 										; set DF if 4.
+0DA3  F8 0F             		ldi 	15 											; slow speed.
+0DA5  3B A9             		bnf 	CRBT_0
+0DA7  F8 07             		ldi 	7 											; fast speed.
+0DA9                    CRBT_0:
+0DA9  5F                		str 	rf 											; write to speed[1] and bump
+0DAA  1F                		inc 	rf
+
+0DAB  F8 00             		ldi 	0 											; write 0 to direction[2] and bump
+0DAD  5F                		str 	rf
+0DAE  1F                		inc 	rf
+
+0DAF  22                		dec 	r2 											; space on stack.
+
+0DB0                    CRBT_XPosition:
+0DB0  D5                		sep 	r5 											; random number 0-255
+0DB1  FA 07             		ani 	7 											; 0-7
+0DB3  FF 05             		smi 	5
+0DB5  33 B0             		bdf		CRBT_XPosition
+0DB7  FC 05             		adi 	5 											; 0-5
+0DB9  FE                		shl 												; x2
+0DBA  FE                		shl 												; x4
+0DBB  52                		str 	r2
+0DBC  FE                		shl 												; x8
+0DBD  E2                		sex 	r2
+0DBE  F4                		add 												; x12
+0DBF  FC 01             		adi 	1
+0DC1  52                		str 	r2
+
+0DC2  8F                		glo 	rf
+0DC3  F6                		shr
+0DC4  FA 07             		ani 	7
+0DC6  F4                		add
+0DC7  5F                		str 	rf 											; write to xPosition[3]
+0DC8  52                		str 	r2
+
+0DC9  92                		ghi 	r2 											; RD ^ PlayerX
+0DCA  BD                		phi 	rd
+0DCB  F8 03             		ldi 	PlayerObject+3
+0DCD  AD                		plo 	rd
+0DCE  0D                		ldn 	rd 											; read PlayerX
+0DCF  F7                		sm  												; PlayerX - RobotX
+0DD0  33 D4             		bdf 	CRBT_NotAbs
+0DD2  FD 00             		sdi 	0
+0DD4                    CRBT_NotAbs:												; |PlayerX-RobotX|
+0DD4  FF 08             		smi 	8
+0DD6  3B B0             		bnf 	CRBT_XPosition
+
+0DD8  1F                		inc 	rf 											; bump to yPosition[4]
+
+0DD9                    CRBT_YPosition:
+0DD9  D5                		sep 	r5 											; random number 0-255
+0DDA  FA 03             		ani 	3 											; 0-3
+0DDC  32 D9             		bz 		CRBT_YPosition 								; 1-3
+0DDE  FF 01             		smi 	1 											; 0-2
+0DE0  FE                		shl 												; x2
+0DE1  52                		str 	r2
+0DE2  FE                		shl 												; x4
+0DE3  FE                		shl 												; x8
+0DE4  E2                		sex 	r2
+0DE5  F4                		add 												; x10
+0DE6  FC 02             		adi 	2 											; spacing
+0DE8  5F                		str 	rf 											; write to yPosition[4]
+
+0DE9  1F                		inc 	rf 											; move to next free slot
+0DEA  1F                		inc 	rf
+
+0DEB  9E                		ghi 	re 											; type 2,3,4
+0DEC  FB 02             		xri 	2 											; if 2 skip
+0DEE  32 F4             		bz 		CRBT_NotFire
+0DF0  8F                		glo 	rf 											; 3 and 4 allow space for missile firer.
+0DF1  FC 06             		adi 	ObjectRecordSize
+0DF3  AF                		plo 	rf
+
+0DF4                    CRBT_NotFire:
+0DF4  12                		inc 	r2 											; fix stack back.
+
+0DF5  2E                		dec 	re 											; decrement the counter
+0DF6  8E                		glo 	re
+0DF7  3A 96             		bnz 	CRBT_Loop 									; keep going till zero.
+0DF9                    CRBT_Exit:
+0DF9  D3                		sep 	r3
+0DFA  30 89             		br 		CreateRobot 								; re-entrant subroutine.
+
+0DFF                    		.org 	$DFF
+
+
+00000 Total Error(s)
+
+CALLVECTOR         06ED    CHASEPLAYER        0CFA    
+CHECKHITPLAYERROBOTOBJECTS                    0D1E    CHECKPLAYERFIRE    0773
+CHPRO_1            0D43    CHPRO_2            0D52    CHPRO_BUMPSCORE    0D7B
+CHPRO_EXIT         0D88    CHPRO_HIT          0D5F    CHPRO_HITROBOT     0D73
+CHPRO_LOOP         0D29    CHPRO_NEXT         0D56    CM_DELETE          07D4
+COLLIDEMISSILE     07BC    CONTINUE           06FF    CP_1               0D1D
+CP_HORIZONTAL      0D15    CRBT_0             0DA9    CRBT_EXIT          0DF9
+CRBT_LOOP          0D96    CRBT_NOTABS        0DD4    CRBT_NOTFIRE       0DF4
+CRBT_XPOSITION     0DB0    CRBT_YPOSITION     0DD9    CREATEROBOT        0D89
+DRAWROOM           0402    DRMWL_NOTLHB       04BF    DRM_CLEARSCREEN    0408
+DRM_FRAME          04EC    DRM_LIVES          053F    DRM_LOOP1          0487
+DRM_LRCLOSED       052A    DRM_LRDOOR         051C    DRM_NEXT           04CA
+DRM_NOBUMP         04DC    DRM_OPENLRDOOR     051F    DRM_TBCLOSED       050B
+DRM_TBDOOR         0500    DRM_VERTICALLOOP   049D    
+DRM_VERTICALOPPOSITE                          0498    DRM_WALLHORIZONTAL 04AC
+DRM_WALLLEFT       04B9    DRM_WRITE          0437    DRM_WRITE00        041E
+DRM_WRITE08        0422    DRM_WRITE80        0426    DRM_WRITEF8        042A
+DRM_WRITEFF        042E    EASTDOOR           00E6 E  FRAMECOUNTER       00F0 E
+GETMISSILEGRAPHIC  0702    GETPLAYERDIRECTION 0747    GETPLAYERGRAPHIC   0750
+GETROBOTGRAPHIC    0705    GPG_LEFT           0767    GPG_NOTALTERNATE   0771
+GRAPHICS           07D9    GRAPHICS_LEFT1     07D9    GRAPHICS_LEFT2     07DE
+GRAPHICS_MISSILE   07ED    GRAPHICS_RIGHT1    07E3    GRAPHICS_RIGHT2    07E8
+GRAPHICS_ROBOT     07EF    HALT               0CF8    
+INITIALISEROOMANDPLAYER                       0575    IRM_CLEAR          057A
+KEYBOARDSTATE      00F1 E  LAUNCHMISSILE      077D    LIFELOST           0CB4
+LIVESLOST          00E8 E  LM_CANCEL          07B3    LM_EXIT            07B2
+MAINLOOP           0C45    MOVEDOWNROOM       0C8A    MOVEHROOM          0CA5
+MOVEHROOM2         0CB1    MOVELEFTROOM       0CA3    MOVEOBJECT         0611
+MOVEOBJECTPOSITION 06BC    MOVERIGHTROOM      0C9F    MOVEUPROOM         0C8E
+MOVEVROOM          0C90    MOVEVROOM2         0C9C    MO_CHECKCOLLISION  06B2
+MO_CLEARNOTDRAWN   06AE    MO_COLLIDE         067A    MO_DELETEMISSILE   06A1
+MO_DONTDELETE      0653    MO_ERASE           0643    MO_INUSE           0616
+MO_MOVEBACKWARDS   0683    MO_NOUPDATEDIRECTION                          0640
+MO_PLAYERHITFRAME  06A7    MO_REDRAW          065F    MO_TIMETOMOVE      0629
+NEWROOM            0C1D    NORTHDOOR          00E4 E  OBJECTCOUNT        000A E
+OBJECTEND          003C E  OBJECTLOOP         0C51    OBJECTRECORDSIZE   0006 E
+OBJECTSTART        0000 E  OUTPUTCHAR         0CE7    PARTIALXORPLOT     0592
+PCCOMPLETE         060B    PCLOOP             0603    
+PLAYERMISSILEOBJECT                           0006 E  PLAYEROBJECT       0000 E
+PLOTCHARACTER      05DE    PX_NOCOLLIDELEFTPART                          05AC
+PX_NOCOLLIDERIGHTPART                         05B5    PX_NOCOLLIDESINGLE 05D6
+PX_SHIFT0          05D0    PX_SHIFT1          05CF    PX_SHIFT2          05CE
+PX_SHIFT3          05CD    PX_SHIFT4          05CC    PX_SHIFT5          05CB
+PX_SHIFT6          05BD    PX_SHIFT7          05A0    PX_XORRE           05A6
+R0                 0000 E  R1                 0001 E  R2                 0002 E
+R3                 0003 E  R4                 0004 E  R5                 0005 E
+R6                 0006 E  R7                 0007 E  R8                 0008 E
+R9                 0009 E  RA                 000A E  RAMPAGE            0008 E
+RANDOM             055C    RB                 000B E  RC                 000C E
+RD                 000D E  RE                 000E E  RESETSEED          054C
+RF                 000F E  RN_NOXOR           056F    SCORE              00E9 E
+SCOREWRITELOOP     0CCF    SEED1              00E2 E  SEED2              00E3 E
+SOUTHDOOR          00E5 E  STARTCODE          0400    STARTGAME          0C00
+STUDIO2BEEPTIMER   00CD E  STUDIO2SYNCTIMER   00CE E  SYNCHRONISE        0C7F
+UKSFOUND           0734    UKSNOFIRE          073F    UKSSCAN            0729
+UPDATEKEYBOARDSTATE                           0726    VIDEOPAGE          0009 E
+VTBL_COLLISIONCHECKORFIRE                     071C    VTBL_GETDIRECTION  0708
+VTBL_GETGRAPHICCHARACTER                      0712    WAITKEY5           0C12
+WESTDOOR           00E7 E  WRITEDISPLAYBYTE   07F4    XADJUSTSTART       007D E
+XROOM              00E0 E  XYOFFSETTABLE      06D7    YADJUSTSTART       00E3 E
+YROOM              00E1 E

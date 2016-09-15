@@ -1,0 +1,13 @@
+;
+;	New ST2 File Builder
+;
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR006
+TITLE:Asteroids
+BINARY:asteroids.st2
+SOURCE:asteroids.asm.bin
+CODE:400,4
+CODE:C00,2
+
+

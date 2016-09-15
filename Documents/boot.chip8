@@ -1,0 +1,29 @@
+
+0300:6d04		r4 := 4
+0302:A9ff		ix := $9FF
+0304:02f2		Clear $900-$9FF
+0306:a89f		ix := $89F
+0308:02f2		Clear $800-$89F
+030a:0066		Video On
+030c:a8d2		ix := $8D2
+030e:b2f8		[$8D2] := $F8
+0310:b115		[$8D4] := $15
+0312:b311		[$8D5] := $11
+0314:b104		[$8D8] := $04
+0316:b104		[$8D9] := $04
+0318:b101		[$8DA] := $01
+031a:b102		[$8DB] := $02
+031c:b105		[$8DC] := $05
+031e:b005		[$8DD] := $05
+0320:a32b		ix := $32B
+0322:6904		R9 := 4
+0324:79ff		Decrememt R9 (now 3)
+0326:e4			Draw Sprite 		
+0327:3924 		Jump to $0324 if R9 not zero
+0329:1400		Jump to $400
+
+
+if $400 contains $0539 this is a machine code call.
+
+
+

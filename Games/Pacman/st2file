@@ -1,0 +1,13 @@
+;
+;	New ST2 File Builder
+;
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR005
+TITLE:Pacman
+BINARY:pacman.st2
+SOURCE:pacman.asm.bin
+CODE:400,4
+CODE:C00,2
+
+
