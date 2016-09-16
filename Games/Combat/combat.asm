@@ -70,7 +70,7 @@ MVRight = $10
 ; ****************************************************************************
 
 DrawDigit:
-        ori     $10                     ; set R6 to $0210 › D
+        ori     $10                     ; set R6 to $0210 √ù D
         plo     r6
         ldi     $02
         phi     r6
@@ -301,8 +301,9 @@ _IV1:   adi     $70                     ; RD = $70/$86
         ani     $1F
         bnz     _InitVehicle            ; do two of them
         plo     rd                      ; RD now is $800
-        br      MainLoop                ; jump to background drawing bit here
+        lbr      MainLoop                ; jump to background drawing bit here
 
+        .org $500 
 ; ****************************************************************************
 ;
 ;                               Main Loop
@@ -313,7 +314,7 @@ MainLoop:
         ldi     MovTmr & 255            ; Point RF Movement timer
         plo     rf
         ldn     rf
-        lbnz    CheckMissiles           ; if non-zero try the missiles
+        bnz    CheckMissiles           ; if non-zero try the missiles
 
 ; ****************************************************************************
 ;                               Move vehicle
@@ -425,8 +426,8 @@ _NoAutoMove:
         ldi     XORDraw & 255           ; draw the new graphic
         plo     r4
         sep     r4
-        lbz     MainLoop                ; go back if no collision
-        br      Dead                    ; if collision current player is dead
+        bz     MainLoop                ; go back if no collision
+        lbr      Dead                    ; if collision current player is dead
 
 ; ****************************************************************************
 ;                            Move missile
@@ -435,7 +436,7 @@ _NoAutoMove:
 CheckMissiles:
         inc     rf                      ; RF now points to missile timer @$8CF
         ldn     rf                      ; check if this is zero
-        lbnz    MainLoop                ; if not, loop back
+        bnz    MainLoop                ; if not, loop back
         glo     rc                      ; get missile speed bit
         ani     $20                     ; 0/32
         bz      _NotSlow
@@ -456,7 +457,7 @@ _NotSlow:
         ldi     CHKKey & 255            ; test the key press
         plo     r4
         sep     r4
-        lbz     MainLoop                ; not pressed, main loop
+        bz     MainLoop                 ; not pressed, main loop
         ldi     SndTmr & 255            ; short beep
         plo     rf
         ldi     3
@@ -502,7 +503,7 @@ _NotSlow:
         shr                             ; 00/16
         adi     14                      ; 14/30 size
         str     ra                      ; set the missiles life
-        lbr     MainLoop                ; and loop back.
+        br     MainLoop                ; and loop back.
 
 MoveMissile:
         glo     rd                      ; point RF to missile sprite record
@@ -514,14 +515,14 @@ MoveMissile:
         ldn     ra                      ; subtract 1 from missile life
         smi     1
         str     ra
-        lbz     MainLoop                ; if zero, that's it.
+        bz     MainLoop                ; if zero, that's it.
         ldi     MOVObj & 255            ; move the object
         plo     r4
         sep     r4
         ldi     XORDraw & 255           ; redraw the object
         plo     r4
         sep     r4
-        lbz     MainLoop                ; and loop around
+        bz     MainLoop                ; and loop around
 
         glo     rd                      ; point RF to the *OTHER* baddie
         xri     $10
@@ -535,7 +536,7 @@ MoveMissile:
         sep     r4                      ; erase it
         ghi     r1                      ; kill the missile by zeroing life
         str     ra
-        lbr     MainLoop
+        br     MainLoop
 
 _KillMe:glo     rf                      ; set to destroy the right one.
         plo     rd
