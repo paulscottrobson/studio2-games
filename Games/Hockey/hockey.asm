@@ -391,7 +391,7 @@ BallDraw:
         ghi     rb                      ; re read the mask
         and                             ; AND with the screen. Zero if collision
         sep     r3
-        lbr     BallDraw
+        br     BallDraw
 
 
 ; ***************************************************************************
@@ -621,7 +621,7 @@ _AdjustCoords:
         ldn     rf
         bz      _WallBounce             ; if 0 or 63 then bouncing off a wall
         xri     63                      ; otherwise bouncing off a bat, so
-        lbnz    _AdjustYI               ; need to adjust YI
+        bnz    _AdjustYI               ; need to adjust YI
 
 _WallBounce:
         ldi     <(BallXI)             ; horizontal bounce
@@ -642,7 +642,7 @@ _EndMoveBall:
         plo     rc
         ldn     rf
         ani     $C0                     ; if off either left or right
-        lbz     MainLoop
+        bz     MainLoop
         sep     r4                      ; Erase the ball
         ldi     30                      ; Long Beep
         str     ra
@@ -680,7 +680,7 @@ _AdjustYI:
         ldn     rd                      ; read the paddle
         plo     rf                      ; RF now points to the paddle record
         lda     rf                      ; read the address, point to height
-        lbz     _WallBounce             ; (safety) no paddle there.....
+        bz     _WallBounce             ; (safety) no paddle there.....
         ldn     rf                      ; read the height
         shr                             ; divide by 2
         shl                             ; multiply by 8
@@ -705,7 +705,7 @@ _SetYI: phi     rb
         plo     rf
         ghi     rb
         str     rf
-        lbr     _WallBounce
+        br     _WallBounce
 
         .org    07FFh                   ; fill it
         .db     0FFh
