@@ -5,6 +5,9 @@
 ;
 ;                    Written by Paul Robson September 2000
 ;
+;	Modified September 2016 to not use Long Branches which cause display 
+;	glitches. PSR.
+;
 ; ****************************************************************************
 ; ****************************************************************************
 ;
@@ -279,7 +282,29 @@ _MClear:ghi     r1                      ; fill the missile table with all zeroes
         glo     rf
         ani     MCount-1
         bnz     _MClear
-        br      _SetMainTmr
+
+        ldi 	LongBranchRoutine/256	; R6 is the long branch routine.
+        phi 	r6
+        ldi 	LongBranchRoutine&255 
+        plo 	r6
+        sep 	r6 						; and enter the main timer loop
+        dw 		_SetMainTmr
+
+; ****************************************************************************
+;
+;				Code replacement for LBR, SEP R6 ; DW nnnnn
+;
+; ****************************************************************************
+
+LongBranchRoutine:
+		lda 	r3 						; get high byte
+		plo 	ra 						; save in RA.0
+		ldn 	r3						; get low byte
+		plo 	r3						; put in R3.0
+		glo 	ra 						; put high byte in R3.1
+		phi 	r3
+		sep 	r3 						; and go there.
+		br 		LongBranchRoutine 		; it is re-entrant
 
 ; ****************************************************************************
 ;
@@ -287,6 +312,8 @@ _MClear:ghi     r1                      ; fill the missile table with all zeroes
 ;
 ; ****************************************************************************
 
+		.org 	$500
+        br      _SetMainTmr
 MainLoop:
         glo     r9                      ; wait for loop to be >= 0
         shl
@@ -308,7 +335,7 @@ MoveInvaders:
         ldi     TmrInv                  ; check invader timer is zero
         plo     rf
         ldn     rf
-        lbnz    NoMove
+        bnz    	NoMove
 
         ghi     rb                      ; use number of invaders as speed
         adi     8
@@ -517,7 +544,10 @@ ExitMoveBase:
         phi     rc
         ldi     MTable                  ; RF Points to the invader table
         plo     rf
+        sep 	r6 						; LBR to missile loop in new page
+		dw 		MILoop
 
+        org 	$600
 MILoop: lda     rf                      ; Read position
         plo     re                      ; Save in RE.0 [Video Byte]
         ldn     rf                      ; Read Mask
@@ -530,7 +560,7 @@ MILoop: lda     rf                      ; Read position
         str     re                      ; write it back
 _MNoErase:
         ghi     rb                      ; look at mask
-        lbz     _MCheckNew              ; if zero, check for new missile
+        bz     _MCheckNew               ; if zero, check for new missile
 
 _MMoveDown:
         glo     re                      ; move it down
@@ -549,20 +579,19 @@ _NotIMissile:
 
         ghi     rb                      ; get mask
         and                             ; and with screen
-        lbnz    _MICollide              ; if non zero, a collision
+        bnz    EnterCollide             ; if non zero, a collision
 
         glo     re                      ; check if reached line at $9F0
         ani     $F8
         xri     $F0
         bz      MIKill                  ; if so, kill it (missile missed)
-
         br      MINext
 
 MIKill: ghi     r1                      ; zero the mask
         phi     rb
 MINext: sex     re                      ; video as index
         ghi     rb                      ; look at mask
-        lbz    _MNoDraw
+        bz    	_MNoDraw
         or                              ; or with screen
         str     re                      ; write back
 _MNoDraw:
@@ -575,9 +604,9 @@ _MNoDraw:
 
         glo     rf                      ; reached the end ?
         ani     (MCount-1)
-        lbnz    MILoop                  ; go and do all of them
-
-        lbr      MainLoop
+        bnz    	MILoop                  ; go and do all of them
+        sep 	r6 						; loop back.
+       	dw      MainLoop
 
 ; ****************************************************************************
 ;          Come here when the mask is zero : check for new missile
@@ -609,7 +638,7 @@ _MCheckNew:
 
         phi     ra                      ; save number
         ani     $1F                     ; only fire one in 8 times
-        lbnz     MIKill
+        bnz     MIKill
 
         ghi     ra                      ; upper 3 bits offset position
         shr                             ; put them in the 3 <est bits
@@ -649,13 +678,13 @@ _MCheckNew:
         sex     re
 _MoveUp:ghi     rb                      ; read mask
         and                             ; and with screen
-        lbnz    _MMoveDown              ; if non-zero move it down and continue
+        bnz    _MMoveDown              	; if non-zero move it down and continue
         glo     re                      ; subtract 8 (move up one square)
         smi     8
         plo     re
         ani     $F8                     ; reached top line ?
         bnz     _MoveUp
-        lbr      MIKill                 ; if so, kill it. There was no baddie
+        br      MIKill                 	; if so, kill it. There was no baddie
                                         ; in that slot.
 _MCheckPlyr:
         ldi     FButton                 ; point RF to fire button
@@ -671,7 +700,7 @@ _NoFirePressed:
         ani     3                       ; only interested in last two states
         str     rc                      ; write back
         xri     1                       ; if current 1, last 0
-        lbnz    MINext                  ; then drop through to fire
+        bnz    	MINext                  ; then drop through to fire
 
         ldi     POffset                 ; point RC to player position
         plo     rc
@@ -689,12 +718,15 @@ _NoFirePressed:
         phi     rc
         ldn     rc                      ; read the pixel position
         phi     rb                      ; put into mask position
-        lbr     MINext
+        br     	MINext
 
+        org 	$6FE
+EnterCollide:
+		ldi 	0
 ; ****************************************************************************
 ;                              Check for collision
 ; ****************************************************************************
-
+		org 	$700
 _MICollide:
         glo     rf                      ; check if player missile collision
         ani     $0F
@@ -703,7 +735,6 @@ _MICollide:
         glo     re                      ; check if player-inv missile collision
         ani     $F0
         xri     $F0
-;;;;    lbr     MIKill                  ; uncomment for infinite lives
         bz      _KillPlayer
 
 _HitShield:
@@ -712,7 +743,9 @@ _HitShield:
         sex     re                      ; use video as index
         and                             ;  the player bullet) and kill it.
         str     re
-        lbr     MIKill
+_GoMIKill:
+		sep 	r6        				; long branch to kill missiles
+       	dw     	MIKill
 
 _KillPlayer:
         ldi     128                     ; this forces a delay of about 2.5secs
@@ -728,8 +761,8 @@ _KillPlayer:
         ldn     rc                      ; decrement lives
         smi     1
         str     rc
-        lbz     _EndGame
-        lbr     MIKill
+        bz     	_EndGame
+        br     	_GoMIKill
 
 _PMCollide:
         glo     re                      ; get the address
@@ -748,7 +781,7 @@ _CheckHitMissile:
         inc     rc                      ; second compare the mask
         ghi     rb
         xor
-        lbz     MIKill                  ; if it is equal to the mask, kill it.
+        bz     	_GoMIKill               ; if it is equal to the mask, kill it.
         dec     rc
 _CHMNext:
         inc     rc                      ; move to the next one
@@ -801,14 +834,14 @@ _NoCForward:
         phi     rb
         dec     rc
         glo     rc
-        lbnz    _ShiftLeft
+        bnz    	_ShiftLeft
         glo     r7                      ; get video address
         smi     8
         plo     r7                      ; update both working and fixed
         plo     re
         dec     ra                      ; do this for 3 lines up
         glo     ra
-        lbnz    _NextLine
+        bnz    	_NextLine
 
         ghi     rf                      ; RC points to ICount
         phi     rc
@@ -821,7 +854,7 @@ _NoCForward:
         ldn     rc                      ; decrement invader count
         smi     1
         str     rc
-        lbz     NewLevel                ; if zero then new level (1 fewer on score)
+        bz      _GoNewLevel             ; if zero then new level (1 fewer on score)
 
         ldi     PScore+3                ; Point RC to the score
         plo     rc
@@ -830,11 +863,15 @@ _IncScore:
         adi     1                       ; and increment by 1
         str     rc
         xri     10                      ; reached 10
-        lbnz    MIKill                  ; else kill the invader, continue
+        bnz    	_GoMIKill               ; else kill the invader, continue
         ghi     r1                      ; zero that one
         str     rc
         dec     rc                      ; do previous digit
         br      _IncScore
+
+_GoNewLevel:
+		sep 	r6 						; long branch to new level.
+		dw  	NewLevel
 
 ; ****************************************************************************
 ;                               Game Over
@@ -886,7 +923,8 @@ WaitP10:sex     r3                      ; use PC as Index
         out     2                       ; scan for key 0
         .db     0
 _WaitK0:bn3     _WaitK0                 ; wait for key 0
-        lbr     Start                   ; and restart
+        sep 	r6
+        dw      Start                   ; and restart
 
         .org    $07F8                   ; this is a bitmask table
         .db     $80,$40,$20,$10,$08,$04,$02,$01
