@@ -98,6 +98,8 @@ ChasingTimer = $52 											; decrements to zero - if non-zero ghosts are unde
 BonusFrameCounter = $53 									; tracks bonus frames.
 Death = $54 												; set to non-zero when died (e.g. ghost collision)
 Outstanding100Points = $55 									; the number of outstanding units of 100 points to be added to the score
+ColourState = $56 											
+BaseColour = 7 												
 ;
 ;	These are the six sprites : Player (0) Ghosts (1-4) Bonus (5) all of which are 16 bytes ong
 ;
@@ -117,7 +119,8 @@ SpriteStorageEnd = SpriteStorage + (SpriteRecordSize*SpriteCount)
     	.include "1802.inc"
     	.org    400h										; ROM code in S2 starts at $400.
 StartCode:
-    	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+    	.db     >(ColourInit),<(ColourInit)					; This is required for the Studio 2, which runs from StartGame with P = 3
+    														
 
 ; ***************************************************************************************************************************************
 ;
@@ -1645,17 +1648,11 @@ NoDelay:
 		adi 	1
 		str 	ra
 
-		ldi 	ChasingTimer 								; decrement chasing timer if > 0
-		plo 	ra
-		ldn 	ra
-		bz 		ChasingZero
-		smi 	1
-		str 	ra
-
-		ani 	8 											; check alternate frames
-		bz 		ChasingZero
-		ldi 	11 											; play beeper alternate frames.
-		str 	r7
+		ldi 	>FrameColour 								
+		phi 	r4 											; alternate-frame beeper, inline. FrameColour does both, and then
+		ldi 	<FrameColour 								; sets the palette from the timer. Moved out because this page is
+		plo 	r4 											; full -- the call is 7 bytes where the original block was 16.
+		sep 	r4
 
 ChasingZero:
 		ldi 	BonusFrameCounter 							; point RA to Bonus Frame Counter
@@ -1726,6 +1723,316 @@ OutputChar:
 		bnz 	ScoreWriteLoop
 
 Dead:	br 		Dead
+
+; ***************************************************************************************************************************************
+;
+;												CDP1864 / Studio III colour support
+;
+; ***************************************************************************************************************************************
+		.org 	$A00 										; a spare cartridge page: $400-$7FF and $C00-$DFF are both full
+
+ColourInit:
+		ldi 	$0B 										; lay down the base colour, then into the game
+		phi 	rd
+		ldi 	0
+		plo 	rd
+CI_Loop:
+		ldi 	BaseColour
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	CI_Loop
+		lbr 	StartGame
+
+; ---------------------------------------------------------------------------------------------------------------------------------------
+;	FrameColour - called once per frame from the main loop.
+; ---------------------------------------------------------------------------------------------------------------------------------------
+; ---------------------------------------------------------------------------------------------------------------------------------------
+
+FrameColour:
+		ldi 	ChasingTimer 								; RA -> chasing timer (RA.1 is already the RAM page)
+		plo 	ra
+		ldn 	ra
+		bz 		FC_NotChasing 								; not chasing: make sure the normal palette is loaded
+		smi 	1 											; decrement it
+		str 	ra
+		bz 		FC_NotChasing 								; just expired this frame -- restore normally, do not flash
+
+		ani 	8 											; beeper on alternate frames, as before
+		bz 		FC_NoBeep
+		ldi 	11
+		str 	r7
+FC_NoBeep:
+		ldn 	ra 											; repaint only when the flash bit is about to flip
+		ani 	7
+		bnz 	FC_Done
+		ldn 	ra 											; which half of the flash?
+		ani 	8
+		bz 		FC_FlashB
+		ldi 	7 											; white
+		br 		FC_Fill
+FC_FlashB:
+		ldi 	3 											; magenta. NOT blue: the background is blue, so blue cells would make
+															; lit and unlit pixels identical and the board would vanish for half
+															; the flash. Measured -- 20 of 70 sampled frames came back completely
+															; blank before this was changed. White and magenta are both legible
+															; against the background, and neither is in the normal palette.
+FC_Fill:
+		plo 	rc 											; hold the colour
+		ldi 	$0B
+		phi 	rd
+		ldi 	0
+		plo 	rd
+FC_FillLoop:
+		glo 	rc 											; every cell the same -- the whole board changes at once
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	FC_FillLoop
+		ldi 	ColourState 								; remember that the power-pill palette is loaded
+		plo 	ra
+		ldi 	1
+		str 	ra
+		br 		FC_Done
+
+FC_NotChasing:
+		ldi 	ColourState 								; mark that the normal palette is in use
+		plo 	ra
+		ldi 	0
+		str 	ra
+															; fall through into SpriteColour
+
+; ---------------------------------------------------------------------------------------------------------------------------------------
+;	SpriteColour - repaint the board, then give every live sprite its own colour.
+; ---------------------------------------------------------------------------------------------------------------------------------------
+; ---------------------------------------------------------------------------------------------------------------------------------------
+
+SpriteColour:
+		sex 	r2 											; the stack, for the one add below
+		ldi 	$0B
+		phi 	rd
+		ldi 	0
+		plo 	rd
+SC_Fill:
+		ldi 	BaseColour
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	SC_Fill
+
+		ldi 	>SpriteColours 								; RE -> the per-sprite colours
+		phi 	re
+		ldi 	<SpriteColours
+		plo 	re
+		ldi 	SpriteStorage 								; RA -> first sprite record
+		plo 	ra
+SC_Sprite:
+		inc 	ra 											; third byte of the record is the graphic;
+		inc 	ra
+		ldn 	ra 											; zero means the sprite is not on screen
+		dec 	ra
+		dec 	ra
+		bz 		SC_Next
+
+		ldn 	ra 											; X position -> cell column
+		adi 	3 											; centre of the 5-wide sprite
+		shr
+		shr
+		shr
+		dec 	r2 											; hold the column on the stack
+		str 	r2
+		inc 	ra
+		ldn 	ra 											; Y position -> cell band
+		dec 	ra
+		adi 	2 											; centre of the 4-tall sprite
+		shr
+		shr
+		shl 												; band * 8
+		shl
+		shl
+		add 												; + column
+		inc 	r2
+		ani 	63 											; stay inside the 64 cells whatever happens
+		plo 	rd
+		ldn 	re 											; this sprite's colour
+		str 	rd
+SC_Next:
+		inc 	re
+		glo 	ra 											; on to the next 16-byte record
+		adi 	SpriteRecordSize
+		plo 	ra
+		xri 	SpriteStorageEnd
+		bnz 	SC_Sprite
+FC_Done:
+		sep 	r3
+
+;	Pacman yellow, the four ghosts distinct, the bonus white. The board itself is white, so colour means "something is here".
+
+SpriteColours:
+		.db 	5 											; 0 Pacman   yellow
+		.db 	1 											; 1 ghost    red
+		.db 	3 											; 2 ghost    magenta
+		.db 	6 											; 3 ghost    cyan
+		.db 	4 											; 4 ghost    green
+		.db 	7 											; 5 bonus    white
+
+; ***************************************************************************************************************************************
+;
+;												CDP1864 / Studio III colour support
+;
+; ***************************************************************************************************************************************
+		.org 	$A00 										; a spare cartridge page: $400-$7FF and $C00-$DFF are both full
+
+ColourInit:
+		ldi 	$0B 										; lay down the base colour, then into the game
+		phi 	rd
+		ldi 	0
+		plo 	rd
+CI_Loop:
+		ldi 	BaseColour
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	CI_Loop
+		lbr 	StartGame
+
+; ---------------------------------------------------------------------------------------------------------------------------------------
+;	FrameColour - called once per frame from the main loop.
+; ---------------------------------------------------------------------------------------------------------------------------------------
+; ---------------------------------------------------------------------------------------------------------------------------------------
+
+FrameColour:
+		ldi 	ChasingTimer 								; RA -> chasing timer (RA.1 is already the RAM page)
+		plo 	ra
+		ldn 	ra
+		bz 		FC_NotChasing 								; not chasing: make sure the normal palette is loaded
+		smi 	1 											; decrement it
+		str 	ra
+		bz 		FC_NotChasing 								; just expired this frame -- restore normally, do not flash
+
+		ani 	8 											; beeper on alternate frames, as before
+		bz 		FC_NoBeep
+		ldi 	11
+		str 	r7
+FC_NoBeep:
+		ldn 	ra 											; repaint only when the flash bit is about to flip
+		ani 	7
+		bnz 	FC_Done
+		ldn 	ra 											; which half of the flash?
+		ani 	8
+		bz 		FC_FlashB
+		ldi 	7 											; white
+		br 		FC_Fill
+FC_FlashB:
+		ldi 	3 											; magenta. NOT blue: the background is blue, so blue cells would make
+															; lit and unlit pixels identical and the board would vanish for half
+															; the flash. Measured -- 20 of 70 sampled frames came back completely
+															; blank before this was changed. White and magenta are both legible
+															; against the background, and neither is in the normal palette.
+FC_Fill:
+		plo 	rc 											; hold the colour
+		ldi 	$0B
+		phi 	rd
+		ldi 	0
+		plo 	rd
+FC_FillLoop:
+		glo 	rc 											; every cell the same -- the whole board changes at once
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	FC_FillLoop
+		ldi 	ColourState 								; remember that the power-pill palette is loaded
+		plo 	ra
+		ldi 	1
+		str 	ra
+		br 		FC_Done
+
+FC_NotChasing:
+		ldi 	ColourState 								; mark that the normal palette is in use
+		plo 	ra
+		ldi 	0
+		str 	ra
+															; fall through into SpriteColour
+
+; ---------------------------------------------------------------------------------------------------------------------------------------
+;	SpriteColour - repaint the board, then give every live sprite its own colour.
+; ---------------------------------------------------------------------------------------------------------------------------------------
+; ---------------------------------------------------------------------------------------------------------------------------------------
+
+SpriteColour:
+		sex 	r2 											; the stack, for the one add below
+		ldi 	$0B
+		phi 	rd
+		ldi 	0
+		plo 	rd
+SC_Fill:
+		ldi 	BaseColour
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	SC_Fill
+
+		ldi 	>SpriteColours 								; RE -> the per-sprite colours
+		phi 	re
+		ldi 	<SpriteColours
+		plo 	re
+		ldi 	SpriteStorage 								; RA -> first sprite record
+		plo 	ra
+SC_Sprite:
+		inc 	ra 											; third byte of the record is the graphic;
+		inc 	ra
+		ldn 	ra 											; zero means the sprite is not on screen
+		dec 	ra
+		dec 	ra
+		bz 		SC_Next
+
+		ldn 	ra 											; X position -> cell column
+		adi 	3 											; centre of the 5-wide sprite
+		shr
+		shr
+		shr
+		dec 	r2 											; hold the column on the stack
+		str 	r2
+		inc 	ra
+		ldn 	ra 											; Y position -> cell band
+		dec 	ra
+		adi 	2 											; centre of the 4-tall sprite
+		shr
+		shr
+		shl 												; band * 8
+		shl
+		shl
+		add 												; + column
+		inc 	r2
+		ani 	63 											; stay inside the 64 cells whatever happens
+		plo 	rd
+		ldn 	re 											; this sprite's colour
+		str 	rd
+SC_Next:
+		inc 	re
+		glo 	ra 											; on to the next 16-byte record
+		adi 	SpriteRecordSize
+		plo 	ra
+		xri 	SpriteStorageEnd
+		bnz 	SC_Sprite
+FC_Done:
+		sep 	r3
+
+;	Pacman yellow, the four ghosts distinct, the bonus white. The board itself is white, so colour means "something is here".
+
+SpriteColours:
+		.db 	5 											; 0 Pacman   yellow
+		.db 	1 											; 1 ghost    red
+		.db 	3 											; 2 ghost    magenta
+		.db 	6 											; 3 ghost    cyan
+		.db 	4 											; 4 ghost    green
+		.db 	7 											; 5 bonus    white
 
 		.org 	$FF
 		.db 	0

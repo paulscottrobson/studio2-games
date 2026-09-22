@@ -1,0 +1,12 @@
+;
+;	New ST2 File Builder
+;
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR008
+TITLE:Berzerk Visicom
+BINARY:berzerk.st2
+SOURCE:berzerk.asm.bin
+CODE:800,4
+CODE:C00,2
+CODE:E00,1

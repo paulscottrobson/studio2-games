@@ -1,0 +1,12 @@
+;
+;	New ST2 File Builder
+;
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR006
+TITLE:Asteroids Visicom
+BINARY:asteroids.st2
+SOURCE:asteroids.asm.bin
+CODE:800,4
+CODE:C00,2
+CODE:E00,1

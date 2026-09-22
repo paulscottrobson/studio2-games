@@ -1,0 +1,951 @@
+                        ; ****************************************************************************
+                        ; ****************************************************************************
+                        ;
+                        ;                          RCA Studio II Combat
+                        ;
+                        ;                    Written by Paul Robson October 2000
+                        ;
+                        ; ****************************************************************************
+                        ; ****************************************************************************
+                        ;
+                        ;       Register usage :
+                        ;
+                        ;       R0 R8 R9 RB.0   [Used in Interrupt Routine]
+                        ;       R1              [Interrupt Vector]
+                        ;       R2              [Stack Pointer]
+                        ;       R3              Program Counter (normal)
+                        ;       R4              Subroutine Pointer
+                        ;       R5              Points to page $07
+                        ;       R6              Scrap for sprite drawing routine
+                        ;       RC.0            Game Type [Bit 7 = 0:Tank/1:Plane]
+                        ;                                 [Bit 6 = 0:Short/1:Long missiles]
+                        ;                                 [Bit 5 = 0:Fast/1:S< missiles]
+                        ;                                 [Bit 4 = 1:Frame Screen]
+                        ;                                 [Bit 3 = 1:Tank Defences]
+                        ;                                 [Bit 2 = 1:Defences and Barriers]
+                        ;                                 [Bit 1 = 1:Balloons]
+                        ;                                 [Bit 0 = 1:Mines]
+                        ;       RD              Points to current object (e.g. it is $800 or $810)
+                        ;       RE              Points to video RAM at $900
+                        ;       RF              Points to program RAM at $800
+                        ;
+                        ;       x = $00 (Player 1), $10 (Player 2)
+                        ;
+                        ;       $8x0            Graphic, Vehicle
+                        ;       $8x1            Byte Position, Vehicle
+                        ;       $8x2            Bit Position, Vehicle
+                        ;       $8x3            Direction, Vehicle
+                        ;       $8x4            Graphic, Missile
+                        ;       $8x5            Byte Position, Missile
+                        ;       $8x6            Bit Position Missile
+                        ;       $8x7            Direction, Missile
+                        ;       $8x8            Life, Missile ($00 = No Missile)
+                        ;
+                        ;       $8F0,8F1        Scores for $800,$810 respectively
+
+      = 0081            GameTest = $81
+
+
+      = 0004            TankSpeed = 20/5
+      = 0005            PlaneSpeed = 5
+
+      = 10CD            SndTmr  = $10CD
+      = 10CE            MovTmr  = $10CE                          ; Movement timer
+      = 10CF            MisTmr  = $10CF                          ; Missile timer
+
+      = 0080            MVUp    = $80                           ; Movement bits
+      = 0040            MVDown  = $40
+      = 0020            MVLeft  = $20
+      = 0010            MVRight = $10
+
+0000                            .include "1802.inc"
+      = 0000            r0      = 0
+      = 0001            r1      = 1
+      = 0002            r2      = 2
+      = 0003            r3      = 3
+      = 0004            r4      = 4
+      = 0005            r5      = 5
+      = 0006            r6      = 6
+      = 0007            r7      = 7
+      = 0008            r8      = 8
+      = 0009            r9      = 9
+      = 000A            ra      = 10
+      = 000B            rb      = 11
+      = 000C            rc      = 12
+      = 000D            rd      = 13
+      = 000E            re      = 14
+      = 000F            rf      = 15
+
+0800                            .org    800h                    
+0800  0C00                      .db     >(ColourInit),<(ColourInit)  
+0802  C4                        nop
+
+                        ; ****************************************************************************
+                        ;
+                        ;                    Draw Digit D at screen position RE
+                        ;
+                        ; ****************************************************************************
+
+0803                    DrawDigit:
+0803  F9 80                     ori     $80                     ; set R6 to $0480 + D -- the Visicom BIOS
+0805  A6                        plo     r6
+0806  F8 04                     ldi     $04                     ; digit table, $270 above the Studio II one
+0808  B6                        phi     r6
+0809  06                        ldn     r6                      ; read the digit address
+080A  A6                        plo     r6                      ; R6 now points to the digit
+080B  F8 05                     ldi     5                       ; do 5 lines
+080D  C0 0C0F                   lbr     DrawDigitBoth           
+0810  00000000 00000000         .db     0,0,0,0,0,0,0,0,0       ; can clear plane 1 as well. Twelve bytes either
+0818  00
+                                                                ; way, so nothing below here moves.
+0819                    _DDDone:
+0819  D3                        sep     r3                      ; return
+081A  30 03                     br     DrawDigit                ; reenter
+
+                        ; ****************************************************************************
+                        ;
+                        ;       Check Keyboard Key depressed. Already set up in OUT2 so return
+                        ;       EF3/4 dependent on RD.
+                        ;
+                        ; ****************************************************************************
+
+081C                    CHKKey:
+081C  8D                        glo     rd                      ; look at RD
+081D  32 25                     bz      CHKEF3                  ; if zero check EF3
+081F  37 28                     b4      CHKExit                 ; if key pressed return non-zero
+0821  F8 00                     ldi     0             ; else return zero
+0823  30 28                     br      CHKExit
+0825  3E 28             CHKEF3: bn3     CHKExit                 ; if not pressed return zero
+0827  81                        glo     r1                      ; return a non-zero value
+0828  D3                CHKExit:sep     r3                      ; return
+0829  30 1C                     br      CHKKey                  ; reentrant
+
+                        ; ****************************************************************************
+                        ;
+                        ;       XOR Draw a Sprite. Sprite Data is at RF.
+                        ;               +0 = Data Pointer, +1 = Screen Byte, +2 = Bit Offset.
+                        ;       Changes
+                        ;               R5,R6,RB.1,RE.0
+                        ;       Returns
+                        ;               D <> 0 if collision took place
+                        ;
+                        ; ****************************************************************************
+
+082B                    XORDraw:
+082B  22                        dec     r2                      ; space on stack for the collision byte
+082C  F8 00                     ldi     0             ; zero it
+082E  52                        str     r2
+082F  4F                        lda     rf                      ; make R5 point to the graphic data
+0830  A5                        plo     r5                      ; which is in page R5
+0831  4F                        lda     rf                      ; Read the Byte position
+0832  AE                        plo     re                      ; RE now points to the video byte
+0833                    _XDrawLoop:
+0833  45                        lda     r5                      ; Read the next graphic byte
+0834  32 69                     bz      _XDrawExit              ; if zero, then exit
+0836  B6                        phi     r6                      ; R6 := [Graphic Data]:$00
+0837  F8 00                     ldi     0                       
+0839  A6                        plo     r6
+083A  0F                        ldn     rf                      ; Read the bit shift
+083B  32 49                     bz      _XDNoBitShift           ; if zero, nothing required.
+083D                    _XShiftLoop:
+083D  BB                        phi     rb                      ; write back counter
+083E  96                        ghi     r6                      ; shift R6 right one as a word
+083F  F6                        shr
+0840  B6                        phi     r6
+0841  86                        glo     r6
+0842  76                        shrc
+0843  A6                        plo     r6
+0844  9B                        ghi     rb                      ; decrement the counter
+0845  FF 01                     smi     1
+0847  3A 3D                     bnz     _XShiftLoop
+0849                    _XDNoBitShift:
+0849  EE                        sex     re                      ; video = index
+084A  96                        ghi     r6                      ; and byte with scren
+084B  F2                        and
+084C  E2                        sex     r2                      ; or that with the collision byte
+084D  F1                        or
+084E  52                        str     r2
+
+084F  EE                        sex     re                      ; video = index
+0850  96                        ghi     r6                      ; XOR R6.1 with screen byte
+0851  F3                        xor
+0852  5E                        str     re
+0853  96                        ghi     r6                      
+0854  D7                        sep     r7                      ; object belongs to player 2
+
+0855  9E                        ghi     re                      ; next screen byte, stop wrap around
+0856  1E                        inc     re
+0857  BE                        phi     re
+
+0858  86                        glo     r6                      ; and byte with scren
+0859  F2                        and
+085A  E2                        sex     r2                      ; or that with the collision byte
+085B  F1                        or
+085C  52                        str     r2
+085D  EE                        sex     re                      ; video = index
+085E  86                        glo     r6                      ; XOR R6.0 with screen byte
+085F  F3                        xor
+0860  5E                        str     re
+0861  86                        glo     r6                      
+0862  D7                        sep     r7
+
+0863  8E                        glo     re                      ; add 7 to RE
+0864  FC 07                     adi     7
+0866  AE                        plo     re
+0867  30 33                     br      _XDrawLoop              ; and do the next byte
+0869                    _XDrawExit:
+0869  2F                        dec     rf                      ; fix RF
+086A  2F                        dec     rf
+086B  42                        lda     r2
+086C  D3                        sep     r3                      ; return
+086D  30 2B                     br      XORDraw                 ; reentrant routine
+
+                        ; ****************************************************************************
+                        ;
+                        ;       Move a Sprite Object in the current direction
+                        ;               +0 = Data Pointer, +1 = Screen Byte, +2 = Bit Offset,+3 = Dir
+                        ;       Changes
+                        ;               R5,R6,RB.1
+                        ;
+                        ; ****************************************************************************
+
+086F                    MOVObj:
+086F  1F                        inc     rf                      ; skip graphic byte, point at screenbyte
+0870  4F                        lda     rf                      ; R6.0 = Screenbyte, point at bit offset
+0871  A6                        plo     r6
+
+0872  1F                        inc     rf                      ; skip over bit offset, pt to direction
+0873  0F                        ldn     rf                      ; read it
+0874  F9 F8                     ori     $F8                     ; force into $F8-$FF range
+0876  A5                        plo     r5                      ; make R5 point to $07F8-$07FF
+0877  05                        ldn     r5                      ; read it
+0878  BB                        phi     rb                      ; save the movement byte
+0879  2F                        dec     rf                      ; point RF to the bit offset
+
+087A  0F                        ldn     rf                      ; R5.0 = Bit Offset ored with $80. This
+087B  F9 80                     ori     $80                     ; We can INC and DEC R5 and keep R5.1
+087D  A5                        plo     r5
+
+087E  9B                        ghi     rb                      ; look at direction byte
+087F  FE                        shl
+0880  3B 88                     bnf     _MONotUp                ; bit 7 is "up" $80
+0882  BB                        phi     rb                      ; subtract 8 from position
+0883  86                        glo     r6
+0884  FF 08                     smi     8
+0886  A6                        plo     r6
+0887  9B                        ghi     rb
+0888                    _MONotUp:
+0888  FE                        shl                             ; bit 6 is "down" $40
+0889  3B 91                     bnf     _MONotDown
+088B  BB                        phi     rb                      ; subtract 8 from position
+088C  86                        glo     r6
+088D  FC 08                     adi     8
+088F  A6                        plo     r6
+0890  9B                        ghi     rb
+0891                    _MONotDown:
+0891  FE                        shl                             ; bit 5 is "left" $20
+0892  3B 9F                     bnf     _MONotLeft
+0894  25                        dec     r5                      ; decrement bit offset
+0895  85                        glo     r5
+0896  FA 07                     ani     7
+0898  FB 07                     xri     7
+089A  3A A9                     bnz     _MOExit
+089C  26                        dec     r6                      ; if = 7, decrement byte
+089D  30 A9                     br      _MOExit
+089F                    _MONotLeft:
+089F  FE                        shl                             ; bit 4 is "right" $10
+08A0  3B A9                     bnf     _MOExit
+08A2  15                        inc     r5                      ; increment bit offset
+08A3  85                        glo     r5
+08A4  FA 07                     ani     7
+08A6  3A A9                     bnz     _MOExit                 ; skip if not 00
+08A8  16                        inc     r6                      ; if zero, next byte
+08A9                    _MOExit:
+08A9  85                        glo     r5                      ; read it back
+08AA  FA 07                     ani     7                       ; only 3 bits relevant
+08AC  EF                        sex     rf                      ; use RF as index
+08AD  73                        stxd
+08AE  86                        glo     r6                      ; read screen byte
+08AF  73                        stxd                            ; write that back too,points at original
+08B0  D3                        sep     r3                      ; return
+08B1  30 6F                     br      MOVObj                  ; reentrant
+
+                        ; ****************************************************************************
+                        ;
+                        ;                               Start a new fight
+                        ;
+                        ; ****************************************************************************
+
+08B3                    NewBattle:
+08B3  F8 00                     ldi     0                       
+08B5  AD                        plo     rd
+08B6  AE                        plo     re
+08B7                    _ClearGame:
+08B7  F8 00                     ldi     0             ; Zero all Memory from $800 to $8EF
+08B9  5D                        str     rd
+08BA  1D                        inc     rd
+08BB  8D                        glo     rd
+08BC  FB F0                     xri     $F0
+08BE  3A B7                     bnz     _ClearGame
+08C0                    _InitVehicle:
+08C0  AD                        plo     rd                      ; RD points to vehicle
+08C1  AF                        plo     rf                      ; RF points to $800 or $810
+08C2  1D                        inc     rd                      ; point RD to $801/$811 [Screen Byte]
+08C3  8D                        glo     rd                      ; D = $01/$11
+08C4  F6                        shr                             ; D = $00/$08
+08C5  F6                        shr                             ; D = $00/$04
+08C6  BB                        phi     rb                      ; save this value
+08C7  32 CB                     bz      _IV1
+08C9  F8 16                     ldi     $16                     ; RD = $00/$16
+08CB  FC 70             _IV1:   adi     $70                     ; RD = $70/$86
+08CD  5D                        str     rd                      ; Set Screen Byte Position
+08CE  1D                        inc     rd
+08CF  F8 06                     ldi     $06                     ; Set sub position to the middle
+08D1  5D                        str     rd
+08D2  1D                        inc     rd                      ; set the initial direction
+08D3  9B                        ghi     rb
+08D4  FC 02                     adi     2
+08D6  5D                        str     rd
+08D7  1D                        inc     rd                      ; set the missile graphic
+08D8  F8 A6                     ldi     MissileGraphic & 255
+08DA  5D                        str     rd
+08DB  5F                        str     rf
+08DC  F8 2B                     ldi     XORDraw & 255           ; Draw the sprite (initially a dot)
+08DE  A4                        plo     r4
+08DF  D4                        sep     r4
+08E0  8F                        glo     rf                      ; go to the next one
+08E1  FC 10                     adi     $10
+08E3  FA 1F                     ani     $1F
+08E5  3A C0                     bnz     _InitVehicle            ; do two of them
+08E7  AD                        plo     rd                      ; RD now is $800
+08E8  C0 0900                   lbr      MainLoop                ; jump to background drawing bit here
+
+0900                            .org $900
+                        ; ****************************************************************************
+                        ;
+                        ;                               Main Loop
+                        ;
+                        ; ****************************************************************************
+
+0900                    MainLoop:
+0900  F8 CE                     ldi     MovTmr & 255            ; Point RF Movement timer
+0902  AF                        plo     rf
+0903  0F                        ldn     rf
+0904  3A 7F                     bnz    CheckMissiles           ; if non-zero try the missiles
+
+                        ; ****************************************************************************
+                        ;                               Move vehicle
+                        ; ****************************************************************************
+
+0906  F8 04                     ldi     TankSpeed               ; reset the movement timer
+0908  5F                        str     rf
+0909  8C                        glo     rc                      ; check if plane
+090A  FE                        shl
+090B  3B 10                     bnf     _NotPlane1
+090D  F8 05                     ldi     PlaneSpeed              ; if so, different speed
+090F  5F                        str     rf
+0910                    _NotPlane1:
+0910  8D                        glo     rd                      ; switch to the next vehicle
+0911  FB 10                     xri     $10
+0913  AD                        plo     rd
+0914  AF                        plo     rf                      ; RF points to its graphic
+0915  F8 2B                     ldi     XORDraw & 255           ; erase the old graphic
+0917  A4                        plo     r4
+0918  D4                        sep     r4
+
+0919  1F                        inc     rf                      ; point RF to direction
+091A  1F                        inc     rf
+091B  1F                        inc     rf
+
+091C  F8 1C                     ldi     CHKKey & 255            ; set up subroutine for key check
+091E  A4                        plo     r4
+091F  E3                        sex     r3                      ; select keys using PC as Index
+0920  62                        out     2                       ; check key 4
+0921  04                        .db     4
+0922  D4                        sep     r4                      ; read the key status
+0923  32 2B                     bz      NoTurnLeft
+0925  0F                        ldn     rf                      ; turn ship left
+0926  FF 01                     smi     1
+0928  FA 07                     ani     7
+092A  5F                        str     rf
+092B                    NoTurnLeft:
+092B  62                        out     2                       ; check key 6
+092C  06                        .db     6
+092D  D4                        sep     r4
+092E  32 36                     bz      NoTurnRight
+0930  0F                        ldn     rf                      ; turn ship right
+0931  FC 01                     adi     1
+0933  FA 07                     ani     7
+0935  5F                        str     rf
+0936                    NoTurnRight:
+0936  EF                        sex     rf                      ; Direction pointed to by index reg.
+0937  0F                        ldn     rf                      ; read direction
+0938  FE                        shl
+0939  FE                        shl                             ; x 4
+093A  F4                        add                             ; x 5
+093B  FC A8                     adi     TankGraphic & 255       ; Add to tank graphic
+093D  5D                        str     rd                      ; update the display graphic
+
+093E  8C                        glo     rc                      ; see if plane
+093F  FE                        shl
+0940  3B 46                     bnf     NotPlane2
+0942  0D                        ldn     rd                      ; if so use the plane graphics
+0943  FC 28                     adi     5*8
+0945  5D                        str     rd
+0946                    NotPlane2:
+0946  8D                        glo     rd                      ; point RF to the vehicle
+0947  AF                        plo     rf
+
+0948  E3                        sex     r3                      ; use PC as Index
+0949  62                        out     2                       ; check 2 (forward)
+094A  02                        .db     2
+094B  D4                        sep     r4                      ; check the key
+094C  32 54                     bz      NoForward
+094E  F8 6F                     ldi     MOVObj & 255            ; move it forward
+0950  A4                        plo     r4
+0951  D4                        sep     r4
+0952  30 6E                     br      EndMove
+0954                    NoForward:
+0954  62                        out     2                       ; check 8 (backward)
+0955  08                        .db     8
+0956  D4                        sep     r4                      ; check the key
+0957  32 6E                     bz      EndMove
+
+0959  1D                        inc     rd                      ; point RD to direction
+095A  1D                        inc     rd
+095B  1D                        inc     rd
+
+095C  0D                        ldn     rd                      ; reverse direction
+095D  FC 04                     adi     4
+095F  FA 07                     ani     7
+0961  5D                        str     rd
+
+0962  F8 6F                     ldi     MOVObj & 255            ; move it forward - backwards
+0964  A4                        plo     r4
+0965  D4                        sep     r4
+
+0966  0D                        ldn     rd                      ; reverse the direction again
+0967  FC 04                     adi     4
+0969  FA 07                     ani     7
+096B  5D                        str     rd
+
+096C  8F                        glo     rf                      ; fix RD back
+096D  AD                        plo     rd
+096E                    EndMove:
+096E  8C                        glo     rc                      ; see if plane
+096F  FE                        shl
+0970  3B 76                     bnf     _NoAutoMove
+0972  F8 6F                     ldi     MOVObj & 255            ; if plane do an extra move
+0974  A4                        plo     r4
+0975  D4                        sep     r4
+0976                    _NoAutoMove:
+
+0976  F8 2B                     ldi     XORDraw & 255           ; draw the new graphic
+0978  A4                        plo     r4
+0979  D4                        sep     r4
+097A  32 00                     bz     MainLoop                ; go back if no collision
+097C  C0 0A01                   lbr      Dead                    ; if collision current player is dead
+
+                        ; ****************************************************************************
+                        ;                            Move missile
+                        ; ****************************************************************************
+
+097F                    CheckMissiles:
+097F  1F                        inc     rf                      ; RF now points to missile timer @$8CF
+0980  0F                        ldn     rf                      ; check if this is zero
+0981  3A 00                     bnz    MainLoop                ; if not, loop back
+0983  8C                        glo     rc                      ; get missile speed bit
+0984  FA 20                     ani     $20                     ; 0/32
+0986  32 8A                     bz      _NotSlow
+0988  F8 02                     ldi     2                       ; 0/2
+098A                    _NotSlow:
+098A  FC 01                     adi     1                       ; 1/3
+098C  5F                        str     rf
+098D  8D                        glo     rd                      ; point RA to the missile life value
+098E  FC 08                     adi     8
+0990  AA                        plo     ra
+0991  9D                        ghi     rd
+0992  BA                        phi     ra
+0993  0A                        ldn     ra                      ; read missile life
+0994  3A D6                     bnz     MoveMissile
+0996  E3                        sex     r3                      ; use PC to test fire
+0997  62                        out     2                       ; select key 0 (fire)
+0998  00                        .db     0
+0999  F8 1C                     ldi     CHKKey & 255            ; test the key press
+099B  A4                        plo     r4
+099C  D4                        sep     r4
+099D  32 00                     bz     MainLoop                 ; not pressed, main loop
+099F  F8 CD                     ldi     SndTmr & 255            ; short beep
+09A1  AF                        plo     rf
+09A2  F8 03                     ldi     3
+09A4  5F                        str     rf
+09A5  8D                        glo     rd                      ; point RB to RD+5
+09A6  FC 04                     adi     4
+09A8  AF                        plo     rf                      ; point RF to RD+4
+09A9  AA                        plo     ra
+09AA  1A                        inc     ra
+09AB  9D                        ghi     rd
+09AC  BA                        phi     ra
+09AD  1D                        inc     rd                      ; skip the graphic
+09AE  4D                        lda     rd                      ; read byte position
+09AF  5A                        str     ra                      ; copy to missile info
+09B0  1A                        inc     ra
+09B1  4D                        lda     rd                      ; read bit posiion
+09B2  5A                        str     ra                      ; copy to missile info
+09B3  0D                        ldn     rd                      ; get movement direction
+09B4  BC                        phi     rc                      ; save in RC.1
+09B5  1A                        inc     ra                      ; set the missile movement direction
+09B6  F8 03                     ldi     3                       ; to down and right to roughly centre it
+09B8  5A                        str     ra
+09B9  2D                        dec     rd                      ; fix RD back to $8x0
+09BA  2D                        dec     rd
+09BB  2D                        dec     rd
+09BC  F8 6F                     ldi     MOVObj & 255            ; move it down and right twice
+09BE  A4                        plo     r4
+09BF  D4                        sep     r4
+09C0  D4                        sep     r4
+09C1  9C                        ghi     rc                      ; set the real direction
+09C2  5A                        str     ra
+09C3  D4                        sep     r4                      ; and move it three times
+09C4  D4                        sep     r4
+09C5  D4                        sep     r4
+09C6  D4                        sep     r4
+09C7  F8 2B                     ldi     XORDraw & 255           ; draw the initial missile
+09C9  A4                        plo     r4
+09CA  D4                        sep     r4
+09CB  1A                        inc     ra                      ; point RA to the missiles life
+09CC  8C                        glo     rc
+09CD  FA 40                     ani     $40                     ; get the 'missile size' (00/64)
+09CF  F6                        shr                             ; 00/32
+09D0  F6                        shr                             ; 00/16
+09D1  FC 0E                     adi     14                      ; 14/30 size
+09D3  5A                        str     ra                      ; set the missiles life
+09D4  30 00                     br     MainLoop                ; and loop back.
+
+09D6                    MoveMissile:
+09D6  8D                        glo     rd                      ; point RF to missile sprite record
+09D7  FC 04                     adi     4
+09D9  AF                        plo     rf
+09DA  F8 2B                     ldi     XORDraw & 255           ; erase the old missile
+09DC  A4                        plo     r4
+09DD  D4                        sep     r4
+09DE  0A                        ldn     ra                      ; subtract 1 from missile life
+09DF  FF 01                     smi     1
+09E1  5A                        str     ra
+09E2  32 00                     bz     MainLoop                ; if zero, that's it.
+09E4  F8 6F                     ldi     MOVObj & 255            ; move the object
+09E6  A4                        plo     r4
+09E7  D4                        sep     r4
+09E8  F8 2B                     ldi     XORDraw & 255           ; redraw the object
+09EA  A4                        plo     r4
+09EB  D4                        sep     r4
+09EC  32 00                     bz     MainLoop                ; and loop around
+
+09EE  8D                        glo     rd                      ; point RF to the *OTHER* baddie
+09EF  FB 10                     xri     $10
+09F1  AF                        plo     rf
+09F2  D4                        sep     r4                      ; erase and redraw
+09F3  D4                        sep     r4
+09F4  CA 09FF                   lbnz    _KillMe
+09F7  8D                        glo     rd                      ; point to the missile again
+09F8  FC 04                     adi     4
+09FA  AF                        plo     rf
+09FB  D4                        sep     r4                      ; erase it
+09FC  C0 0C09                   lbr     KillMissile             
+                                                                ; one is exactly full and the zero source
+                                                                ; below costs a byte more than ghi r1 did
+
+09FF  8F                _KillMe:glo     rf                      ; set to destroy the right one.
+0A00  AD                        plo     rd
+
+                        ; ****************************************************************************
+                        ;        Vehicle (RD) has collided with missile or something else
+                        ; ****************************************************************************
+
+0A01  8D                Dead:   glo     rd                      ; D = 0/$10
+0A02  32 06                     bz      _NotRight
+0A04  F8 01                     ldi     1                       ; D = 0/1
+0A06                    _NotRight:
+0A06  FC F0                     adi     $F0                     ; D = $F0/$F1
+0A08  FB 01                     xri     $01                     ; switch so right one gets score
+0A0A  AF                        plo     rf                      ; point RF to score
+0A0B  0F                        ldn     rf                      ; bump score
+0A0C  FC 01                     adi     1
+0A0E  5F                        str     rf
+0A0F  BC                        phi     rc                      ; save this in RC
+0A10  F8 F0                     ldi     $F0                     ; point RF to $08F0
+0A12  AF                        plo     rf
+0A13  F8 11                     ldi     $11                     ; point RE to $0911
+0A15  AE                        plo     re
+0A16  F8 03                     ldi     DrawDigit & 255         ; draw the digit
+0A18  A4                        plo     r4
+0A19  4F                        lda     rf                      ; read the digit
+0A1A  D4                        sep     r4                      ; draw it.
+0A1B  F8 16                     ldi     $16                     ; point RE to $0916
+0A1D  AE                        plo     re
+0A1E  0F                        ldn     rf                      ; read the other digit
+0A1F  D4                        sep     r4                      ; draw the other digit
+0A20  F8 CD                     ldi     SndTmr & 255            ; long beep
+0A22  AF                        plo     rf
+0A23  F8 1E                     ldi     30
+0A25  5F                        str     rf
+0A26  F8 CF                     ldi     MisTmr & 255            ; delay for 3.5 seconds
+0A28  AF                        plo     rf
+0A29  5F                        str     rf
+0A2A  0F                WaitTmr:ldn     rf                      ; wait for it to time out
+0A2B  3A 2A                     bnz     WaitTmr
+0A2D  9C                        ghi     rc                      ; look at the score
+0A2E  FB 09                     xri     9                       ; reached 10 ?
+0A30  3A 34                     bnz     InitGame                ; if not 10 then start the game again
+0A32                    GameOver:                               ; we now stop, game over. Reset to
+0A32  30 32                     br      GameOver                ; Restart
+
+                        ; ****************************************************************************
+                        ;
+                        ;                       Draw the frame/background etc.
+                        ;
+                        ; ****************************************************************************
+
+0A34                    InitGame:
+0A34  F8 00                     ldi     0                       
+0A36  AE                        plo     re
+0A37                    _ClearScreen:                           ; Clear the screen, possibly w/frame
+0A37  C0 0C29                   lbr     ClearScreenBoth         
+0A3A                    _CSBack:                                ; tanks' red is left stranded wherever they were
+0A3A  8C                        glo     rc                      ; when the round ended. Three bytes either way.
+0A3B  FA 10                     ani     $10
+0A3D  32 5A                     bz      _CSNext
+0A3F  8E                        glo     re                      ; RE = offset
+0A40  FC 08                     adi     8                       ; $F8-$07 => $00-$0F
+0A42  FA F0                     ani     $F0                     ; if zero, then top and tail screen
+0A44  32 57                     bz      _CSEdge
+0A46  8E                        glo     re                      ; check if left edge
+0A47  FA 07                     ani     7
+0A49  32 53                     bz      _CSLSd
+0A4B  FB 07                     xri     7                       ; check if right edge
+0A4D  3A 5A                     bnz     _CSNext
+0A4F  F8 01                     ldi     $01
+0A51  30 59                     br      _CSWNxt
+0A53  F8 80             _CSLSd: ldi     $80                     ; left side
+0A55  30 59                     br      _CSWNxt
+0A57  F8 FF             _CSEdge:ldi     $FF                     ; solid bar
+0A59  5E                _CSWNxt:str     re                      ; write it out
+0A5A  1E                _CSNext:inc     re                      ; next screen byte
+0A5B  8E                        glo     re
+0A5C  3A 37                     bnz     _ClearScreen
+0A5E  2E                        dec     re                      ; fixes RE wrapping around to $A00
+0A5F  8C                        glo     rc
+0A60  FA 04                     ani     $04                     ; analyse bits 3,2,1,0 of game desc
+0A62  3A 7F                     bnz     _DefAndBar
+0A64  8C                        glo     rc
+0A65  FA 08                     ani     $08
+0A67  3A 7B                     bnz     _DefOnly
+0A69  8C                        glo     rc
+0A6A  FA 02                     ani     $02
+0A6C  3A 77                     bnz     _Balloons
+0A6E                    _CheckMines:
+0A6E  8C                        glo     rc
+0A6F  F6                        shr
+0A70  CB 08B3                   lbnf    NewBattle               ; draw the mines
+0A73  F8 48                     ldi     DrawMines & 255
+0A75  30 81                     br      _DrawSprites
+0A77                    _Balloons:
+0A77  F8 64                     ldi     DrawBalloon & 255
+0A79  30 81                     br      _DrawSprites
+0A7B                    _DefOnly:                               ; just the ][ barriers
+0A7B  F8 77                     ldi     DrawDefence & 255
+0A7D  30 81                     br      _DrawSprites
+0A7F                    _DefAndBar:                             ; all the barriers
+0A7F  F8 6E                     ldi     DrawBarDefence & 255
+0A81                    _DrawSprites:
+0A81  AF                        plo     rf                      ; store in RF.0
+0A82  95                        ghi     r5                      ; make RF point to where the info is
+0A83  BF                        phi     rf
+0A84  F8 2B             _DSLoop:ldi     XORDraw & 255           ; draw it
+0A86  A4                        plo     r4
+0A87  D4                        sep     r4
+0A88  1F                        inc     rf                      ; move to next
+0A89  1F                        inc     rf
+0A8A  1F                        inc     rf
+0A8B  0F                        ldn     rf
+0A8C  3A 84                     bnz     _DSLoop                 ; loop back if not completed.
+0A8E  9D                        ghi     rd                      ; fix RF to point to RAM
+0A8F  BF                        phi     rf
+0A90  C0 08B3                   lbr     NewBattle
+
+                        ; ****************************************************************************
+                        ;
+                        ;                               New game
+                        ;
+                        ; ****************************************************************************
+
+0A93  F8 11             Start:  ldi     $11                     
+0A95  BE                        phi     re
+0A96  F8 10                     ldi     $10                     
+0A98  BD                        phi     rd
+0A99  F8 0B                     ldi     $0B                     ; R5 points to page $0B [tabs/gfx]
+0A9B  B5                        phi     r5
+0A9C  BF                        phi     rf                      ; RF points here briefly
+0A9D  F8 08                     ldi     $08                     ; R4 points to page $08 [subroutines]
+0A9F  B4                        phi     r4
+0AA0  F8 44                     ldi     DrawPrompt & 255
+0AA2  AF                        plo     rf
+0AA3  F8 2B                     ldi     XORDraw & 255
+0AA5  A4                        plo     r4
+0AA6  D4                        sep     r4
+0AA7  9D                        ghi     rd
+0AA8  BF                        phi     rf
+0AA9  F8 F0                     ldi     $F0                     ; Zero scores in $F0 and $F1
+0AAB  AF                        plo     rf
+0AAC  F8 00                     ldi     0                       
+0AAE  5F                        str     rf
+0AAF  1F                        inc     rf
+0AB0  5F                        str     rf
+0AB1  AC                        plo     rc                      ; Zero the game selector value.
+0AB2  1F                        inc     rf                      ; use this byte as working ($2F2)
+0AB3  5F                        str     rf                      ; zero it
+0AB4                    _WaitKey:
+0AB4  E3                        sex     r3                      ; check pad 2 key 0 (start)
+0AB5  62                        out     2
+0AB6  00                        .db     0
+0AB7  37 D8                     b4      _StartGame              ; if pressed, start the game
+0AB9  0F                        ldn     rf                      ; bump the value, wrap round at 15
+0ABA  FC 01                     adi     1
+0ABC  FA 0F                     ani     15
+0ABE  5F                        str     rf
+0ABF  EF                        sex     rf                      ; prepare to "out" it.
+0AC0  62                        out     2
+0AC1  2F                        dec     rf                      ; fix RF
+0AC2  3E B4                     bn3     _WaitKey                ; if not pressed, go back
+0AC4  1F                        inc     rf                      ; point RF to next byte
+0AC5  8C                        glo     rc                      ; get game ID
+0AC6  5F                        str     rf                      ; save it there
+0AC7  FE                        shl                             ; multiply by four
+0AC8  FE                        shl
+0AC9  F4                        add                             ; multiply by five
+0ACA  FE                        shl                             ; multiply by ten
+0ACB  2F                        dec     rf                      ; point to new key
+0ACC  F4                        add                             ; multiply by ten + new key
+0ACD  AC                        plo     rc                      ; update RC
+0ACE  F8 CD                     ldi     SndTmr & 255            ; point RD to sound timer
+0AD0  AD                        plo     rd
+0AD1  F8 0A                     ldi     10                      ; short beep
+0AD3  5D                        str     rd
+0AD4                    _WaitRel:
+0AD4  36 D4                     b3      _WaitRel                ; wait for key release
+0AD6  30 B4                     br      _WaitKey                ; go back and wait for another key
+
+0AD8                    _StartGame:
+0AD8  37 D8                     b4      _StartGame              ; wait for release
+0ADA  C0 0A34                   lbr     InitGame                ; and run the game !
+
+                        ; ****************************************************************************
+                        ;
+                        ;       Graphic Data. The ORG must be set so the memory is filled through
+                        ;       to $7FF (e.g. the table is at $7F8)
+                        ;
+                        ; ****************************************************************************
+
+0B44                            .org    $B44
+0B44                    DrawPrompt:
+0B44  7E6B0500                  .db     Prompt & 255,13*8+3,5,0
+0B48                    DrawMines:
+0B48  A63B05                    .db     MissileGraphic & 255, 7*8+3,5
+0B4B  A68A04                    .db     MissileGraphic & 255, 17*8+2,4
+0B4E  A66E05                    .db     MissileGraphic & 255, 13*8+6,5
+0B51  A6DC04                    .db     MissileGraphic & 255, 27*8+4,4
+0B54  A62105                    .db     MissileGraphic & 255, 4*8+1,5
+0B57  A69804                    .db     MissileGraphic & 255, 19*8+0,4
+0B5A  A6B501                    .db     MissileGraphic & 255, 22*8+5,1
+0B5D  A63605                    .db     MissileGraphic & 255, 6*8+6,5
+0B60  A65D04                    .db     MissileGraphic & 255, 11*8+5,4
+0B63  00                        .db     0
+0B64                    DrawBalloon:
+0B64  842200                    .db     Balloon & 255,4*8+2,0
+0B67  84C600                    .db     Balloon & 255,24*8+6,0
+0B6A  847304                    .db     Balloon & 255,14*8+3,4
+0B6D  00                        .db     0
+0B6E                    DrawBarDefence:
+0B6E  8A2307                    .db     VLine & 255,4*8+3,7
+0B71  8AB307                    .db     VLine & 255,22*8+3,7
+0B74  908303                    .db     HLine & 255,16*8+3,3
+0B77                    DrawDefence:
+0B77  926104                    .db     LeftSqGraphic & 255,12*8+1,4
+0B7A  9C6504                    .db     RightSqGraphic & 255,12*8+5,4
+0B7D  00                        .db     0
+                        ; xxxx.xxx
+                        ; x......x
+                        ; x.xx.xxx
+                        ; x..x....
+                        ; xxxx.x..
+0B7E                    Prompt:
+0B7E  F781B790 F400             .db     $F7,$81,$B7,$90,$F4,$00
+0B84                    Balloon:
+0B84  70F8F8F8 7000             .db     $70,$F8,$F8,$F8,$70,$00
+0B8A                    VLine:
+0B8A  80808080 8000             .db     $80,$80,$80,$80,$80,$00
+0B90                    HLine:
+0B90  FE00                      .db     $FE,$00
+0B92                    LeftSqGraphic:
+0B92  F0101010 10101010         .db     $F0,$10,$10,$10,$10,$10,$10,$10,$F0,$00
+0B9A  F000
+0B9C                    RightSqGraphic:
+0B9C  0F080808 08080808         .db     $0F,$08,$08,$08,$08,$08,$08,$08,$0F,$00
+0BA4  0F00
+
+                        ;    ....x...  ...x....  .xxx....
+                        ;    ..xxx...  ..xxx...  ..xxx...
+                        ;    .xxx....  ..xxx...  .xxx....
+                        ;    x.x.....  ..x.x...  ........
+
+0BA6                    MissileGraphic:
+0BA6  8000                      .db     $80,$00
+0BA8                    TankGraphic:
+0BA8  10383828 00               .db     $10,$38,$38,$28,$00     ; (Tank, up)
+0BAD  103870A0 00               .db     $10,$38,$70,$A0,$00     ; (Tank, up right)
+0BB2  70387000 00               .db     $70,$38,$70,$00,$00     ; (Tank, right)
+0BB7  A0703808 00               .db     $A0,$70,$38,$08,$00     ; (Tank, down right)
+0BBC  28383810 00               .db     $28,$38,$38,$10,$00     ; (Tank, down)
+0BC1  2870E080 00               .db     $28,$70,$E0,$80,$00     ; (Tank, down left)
+0BC6  38703800 00               .db     $38,$70,$38,$00,$00     ; (Tank, left)
+0BCB  80E07028 00               .db     $80,$E0,$70,$28,$00     ; (Tank, up left)
+
+                        ;    x.......    ..xxx...    ....x...
+                        ;    xxxx....    ..xx....    ..xx....
+                        ;    xxxxx...    ..xx....    xxx.....
+                        ;    ........    ..x.....    xx......
+
+0BD0                    PlaneGraphic:
+0BD0  20303038 00               .db     $20,$30,$30,$38,$00     ; (Plane, up)
+0BD5  0830E0C0 00               .db     $08,$30,$E0,$C0,$00     ; (Plane, up right)
+0BDA  80F0F800 00               .db     $80,$F0,$F8,$00,$00     ; (Plane, right)
+0BDF  C0E03008 00               .db     $C0,$E0,$30,$08,$00     ; (Plane, down right)
+0BE4  38303020 00               .db     $38,$30,$30,$20,$00     ; (Plane, down)
+0BE9  18386080 00               .db     $18,$38,$60,$80,$00     ; (Plane, down left)
+0BEE  0878F800 00               .db     $08,$78,$F8,$00,$00     ; (Plane, left)
+0BF3  80603818 00               .db     $80,$60,$38,$18,$00     ; (Plane, up left)
+
+0BF8  80                        .db     MVUp                    ; table converts direction to
+0BF9  90                        .db     MVUp+MVRight            ; movement bit collection
+0BFA  10                        .db     MVRight
+0BFB  50                        .db     MVDown+MVRight
+0BFC  40                        .db     MVDown
+0BFD  60                        .db     MVDown+MVLeft
+0BFE  20                        .db     MVLeft
+0BFF  A0                        .db     MVUp+MVLeft
+
+0C00                            .org    $C00                    ; a spare cartridge page
+
+0C00                    ColourInit:
+0C00  F8 0C                     ldi     >TintPlane1             ; R7 is the tint routine's call pointer
+0C02  B7                        phi     r7
+0C03  F8 3C                     ldi     <TintPlane1
+0C05  A7                        plo     r7
+0C06  C0 0A93                   lbr     Start
+
+0C09                    KillMissile:                            ; the tail of the missile-expiry path,
+0C09  F8 00                     ldi     0                       ; lifted off the full $900 page
+0C0B  5A                        str     ra
+0C0C  C0 0900                   lbr     MainLoop
+
+                        ; XOR -- so plane 1 has to be cleared underneath them. Miss this and a tank that happened to
+                        ; be sitting where the score goes leaves its red behind as a yellow impression, because the
+0C0F                    DrawDigitBoth:
+0C0F  BB                        phi     rb
+0C10  46                        lda     r6                      ; read byte from data
+0C11  5E                        str     re                      ; write it out
+0C12  9E                        ghi     re                      ; $11 -> $13
+0C13  FC 02                     adi     2
+0C15  BE                        phi     re
+0C16  F8 00                     ldi     0
+0C18  5E                        str     re                      ; clear plane 1 at the same spot
+0C19  9E                        ghi     re
+0C1A  FF 02                     smi     2
+0C1C  BE                        phi     re
+0C1D  8E                        glo     re                      ; next line down
+0C1E  FC 08                     adi     8
+0C20  AE                        plo     re
+0C21  9B                        ghi     rb                      ; decrement rb
+0C22  FF 01                     smi     1
+0C24  3A 0F                     bnz     DrawDigitBoth
+0C26  C0 0819                   lbr     _DDDone
+
+                        ; On entry RE -> the screen byte being cleared. Zero it in BOTH planes.
+0C29                    ClearScreenBoth:
+0C29  F8 00                     ldi     0
+0C2B  5E                        str     re                      ; plane 0, as before
+0C2C  9E                        ghi     re                      ; $11 -> $13
+0C2D  FC 02                     adi     2
+0C2F  BE                        phi     re
+0C30  F8 00                     ldi     0
+0C32  5E                        str     re                      ; and the same offset in plane 1
+0C33  9E                        ghi     re
+0C34  FF 02                     smi     2
+0C36  BE                        phi     re
+0C37  F8 00                     ldi     0                       ; leave D as _ClearScreen left it
+0C39  C0 0A3A                   lbr     _CSBack
+
+0C3C                    TintPlane1:                             ; D = the byte just XORed into plane 0
+0C3C  22                        dec     r2
+0C3D  52                        str     r2                      ; keep it; D is needed for the tests
+0C3E  9F                        ghi     rf
+0C3F  FB 10                     xri     $10                     ; a vehicle record, or ROM?
+0C41  3A 54                     bnz     _TPExit
+0C43  8F                        glo     rf
+0C44  FA 10                     ani     $10                     ; $1000 player 1, $1010 player 2
+0C46  32 54                     bz      _TPExit
+0C48  9E                        ghi     re                      ; $11 -> $13
+0C49  FC 02                     adi     2
+0C4B  BE                        phi     re
+0C4C  02                        ldn     r2                      ; the same byte, into the second plane
+0C4D  EE                        sex     re
+0C4E  F3                        xor
+0C4F  5E                        str     re
+0C50  9E                        ghi     re                      ; and back to plane 0
+0C51  FF 02                     smi     2
+0C53  BE                        phi     re
+0C54                    _TPExit:
+0C54  12                        inc     r2                      ; drop the saved byte
+0C55  EE                        sex     re                      ; XORDraw expects X = E
+0C56  D4                        sep     r4                      ; return into XORDraw
+0C57  30 3C                     br      TintPlane1              ; reentrant, like everything else here
+
+0C59                            .end
+                        ;
+
+
+00000 Total Error(s)
+
+BALLOON            0B84    CHECKMISSILES      097F    CHKEF3             0825
+CHKEXIT            0828    CHKKEY             081C    CLEARSCREENBOTH    0C29
+COLOURINIT         0C00    DEAD               0A01    DRAWBALLOON        0B64
+DRAWBARDEFENCE     0B6E    DRAWDEFENCE        0B77    DRAWDIGIT          0803
+DRAWDIGITBOTH      0C0F    DRAWMINES          0B48    DRAWPROMPT         0B44
+ENDMOVE            096E    GAMEOVER           0A32    GAMETEST           0081 E
+HLINE              0B90    INITGAME           0A34    KILLMISSILE        0C09
+LEFTSQGRAPHIC      0B92    MAINLOOP           0900    MISSILEGRAPHIC     0BA6
+MISTMR             10CF E  MOVEMISSILE        09D6    MOVOBJ             086F
+MOVTMR             10CE E  MVDOWN             0040 E  MVLEFT             0020 E
+MVRIGHT            0010 E  MVUP               0080 E  NEWBATTLE          08B3
+NOFORWARD          0954    NOTPLANE2          0946    NOTURNLEFT         092B
+NOTURNRIGHT        0936    PLANEGRAPHIC       0BD0    PLANESPEED         0005 E
+PROMPT             0B7E    R0                 0000 E  R1                 0001 E
+R2                 0002 E  R3                 0003 E  R4                 0004 E
+R5                 0005 E  R6                 0006 E  R7                 0007 E
+R8                 0008 E  R9                 0009 E  RA                 000A E
+RB                 000B E  RC                 000C E  RD                 000D E
+RE                 000E E  RF                 000F E  RIGHTSQGRAPHIC     0B9C
+SNDTMR             10CD E  START              0A93    TANKGRAPHIC        0BA8
+TANKSPEED          0004 E  TINTPLANE1         0C3C    VLINE              0B8A
+WAITTMR            0A2A    XORDRAW            082B    _BALLOONS          0A77
+_CHECKMINES        0A6E    _CLEARGAME         08B7    _CLEARSCREEN       0A37
+_CSBACK            0A3A    _CSEDGE            0A57    _CSLSD             0A53
+_CSNEXT            0A5A    _CSWNXT            0A59    _DDDONE            0819
+_DEFANDBAR         0A7F    _DEFONLY           0A7B    _DRAWSPRITES       0A81
+_DSLOOP            0A84    _INITVEHICLE       08C0    _IV1               08CB
+_KILLME            09FF    _MOEXIT            08A9    _MONOTDOWN         0891
+_MONOTLEFT         089F    _MONOTUP           0888    _NOAUTOMOVE        0976
+_NOTPLANE1         0910    _NOTRIGHT          0A06    _NOTSLOW           098A
+_STARTGAME         0AD8    _TPEXIT            0C54    _WAITKEY           0AB4
+_WAITREL           0AD4    _XDNOBITSHIFT      0849    _XDRAWEXIT         0869
+_XDRAWLOOP         0833    _XSHIFTLOOP        083D

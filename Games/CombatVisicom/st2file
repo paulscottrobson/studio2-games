@@ -1,0 +1,8 @@
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR003
+TITLE:Combat Visicom Visicom
+BINARY:combat.st2
+SOURCE:combat.asm.bin
+CODE:800,4
+CODE:C00,1

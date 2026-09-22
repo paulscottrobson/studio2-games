@@ -1,0 +1,13 @@
+;
+;	ST2 File Builder -- Toshiba Visicom COM-100 build
+;
+AUTHOR:PR
+DUMPER:PR
+CAT:PSR005V
+TITLE:Pacman Visicom
+BINARY:pacman.st2
+SOURCE:pacman.asm.bin
+CODE:800,4
+CODE:C00,1
+CODE:D00,2
+CODE:F00,1

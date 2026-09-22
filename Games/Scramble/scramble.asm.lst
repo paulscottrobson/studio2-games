@@ -93,7 +93,8 @@
 
 0400                        	.org    400h										; ROM code in S2 starts at $400.
 0400                    StartCode:
-0400  0D3E                  	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+0400  0A00                  	.db     >(ColourInit),<(ColourInit)					; This is required for the Studio 2, which runs from StartGame with P = 3
+                        															
 
                         ; ***************************************************************************************************************************************
                         ;
@@ -1552,12 +1553,87 @@
 0D89  B4                    	phi 	r4
 0D8A  D4                    	sep 	r4
 
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;										CDP1864 colour for the Studio III / MPT-02 family
+                        ;
+                        ; ***************************************************************************************************************************************
+0A00                    		.org 	$A00 										; a spare cartridge page: the game is $400-$7FF and $C00-$DFF
+
+0A00                    ColourInit:
+0A00  F8 0B             		ldi 	$0B 										; RD -> the colour window
+0A02  BD                		phi 	rd
+0A03  F8 00             		ldi 	0
+0A05  AD                		plo 	rd
+0A06  F8 0A             		ldi 	>BandTable 									; RE -> the cells to lay down
+0A08  BE                		phi 	re
+0A09  F8 17             		ldi 	<BandTable
+0A0B  AE                		plo 	re
+0A0C                    CI_Loop:
+0A0C  4E                		lda 	re
+0A0D  5D                		str 	rd
+0A0E  1D                		inc 	rd
+0A0F  8D                		glo 	rd
+0A10  FB 40             		xri 	64
+0A12  3A 0C             		bnz 	CI_Loop
+0A14  C0 0D3E           		lbr 	StartGame
+
+0A17                    BandTable:
+0A17  07070707 07070707 		.db 	7,7,7,7,7,7,7,7 							; band 0  rows 0-3   top border, score      white
+0A1F  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 1  rows 4-7   high sky               cyan
+0A27  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 2  rows 8-11  sky                    cyan
+0A2F  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 3  rows 12-15 sky, the ship          cyan
+0A37  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 4  rows 16-19 low sky, the ship      cyan
+0A3F  05050505 05050505 		.db 	5,5,5,5,5,5,5,5 							; band 5  rows 20-23 rockets climbing       yellow
+0A47  04040404 04040404 		.db 	4,4,4,4,4,4,4,4 							; band 6  rows 24-27 terrain tops, fuel     green
+0A4F  04040404 04040404 		.db 	4,4,4,4,4,4,4,4 							; band 7  rows 28-31 terrain, border, gauge green
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;										CDP1864 colour for the Studio III / MPT-02 family
+                        ;
+                        ; ***************************************************************************************************************************************
+0A00                    		.org 	$A00 										; a spare cartridge page: the game is $400-$7FF and $C00-$DFF
+
+0A00                    ColourInit:
+0A00  F8 0B             		ldi 	$0B 										; RD -> the colour window
+0A02  BD                		phi 	rd
+0A03  F8 00             		ldi 	0
+0A05  AD                		plo 	rd
+0A06  F8 0A             		ldi 	>BandTable 									; RE -> the cells to lay down
+0A08  BE                		phi 	re
+0A09  F8 17             		ldi 	<BandTable
+0A0B  AE                		plo 	re
+0A0C                    CI_Loop:
+0A0C  4E                		lda 	re
+0A0D  5D                		str 	rd
+0A0E  1D                		inc 	rd
+0A0F  8D                		glo 	rd
+0A10  FB 40             		xri 	64
+0A12  3A 0C             		bnz 	CI_Loop
+0A14  C0 0D3E           		lbr 	StartGame
+
+0A17                    BandTable:
+0A17  07070707 07070707 		.db 	7,7,7,7,7,7,7,7 							; band 0  rows 0-3   top border, score      white
+0A1F  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 1  rows 4-7   high sky               cyan
+0A27  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 2  rows 8-11  sky                    cyan
+0A2F  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 3  rows 12-15 sky, the ship          cyan
+0A37  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 4  rows 16-19 low sky, the ship      cyan
+0A3F  05050505 05050505 		.db 	5,5,5,5,5,5,5,5 							; band 5  rows 20-23 rockets climbing       yellow
+0A47  04040404 04040404 		.db 	4,4,4,4,4,4,4,4 							; band 6  rows 24-27 terrain tops, fuel     green
+0A4F  04040404 04040404 		.db 	4,4,4,4,4,4,4,4 							; band 7  rows 28-31 terrain, border, gauge green
+
 00000 Total Error(s)
 
 ADDSCOREBUMP       07AE    ASB_EXIT           07C3    ASB_LOOP           07B6
-BOTTOM             00F4 E  BULLETOBJECT       0080 E  CNO_CREATE         0604
-CNO_FINDUNUSED     060A    CNO_FINDYPOSITION  064E    CNO_FOUNDSLOT      0617
-CNO_NOTATBOTTOM    0644    COLLIDEPLAYERMISSILE                          0754
+BANDTABLE          0A17    BOTTOM             00F4 E  BULLETOBJECT       0080 E
+CI_LOOP            0A0C    CNO_CREATE         0604    CNO_FINDUNUSED     060A
+CNO_FINDYPOSITION  064E    CNO_FOUNDSLOT      0617    CNO_NOTATBOTTOM    0644
+COLLIDEPLAYERMISSILE                          0754    COLOURINIT         0A00
+BANDTABLE          0A17    BOTTOM             00F4 E  BULLETOBJECT       0080 E
+CI_LOOP            0A0C    CNO_CREATE         0604    CNO_FINDUNUSED     060A
+CNO_FINDYPOSITION  064E    CNO_FOUNDSLOT      0617    CNO_NOTATBOTTOM    0644
+COLLIDEPLAYERMISSILE                          0754    COLOURINIT         0A00
 CPM_EXIT           07A7    CPM_NOTFUEL        0796    CPM_SCORETABLE     07A8
 CREATENEWOBJECT    05F1    DEAD               0CE3    DGR_DRAWOKAY       0663
 DGR_EXIT           068D    DGR_LOOP           0685    

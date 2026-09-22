@@ -46,10 +46,8 @@ class ST2File:
 		f = open(fileName,"rb")									# Open file for binary reading
 		contents = f.read(8192); 								# Read in lots and lots 
 		f.close()
-		code = []												# convert it to numeric list
-		for c in contents:
-			code.append(ord(c))
-		print "Read in {0} length {1} bytes.".format(fileName,len(code))
+		code = list(contents)									# convert it to numeric list
+		print("Read in {0} length {1} bytes.".format(fileName,len(code)))
 		return code 											# return the list
 
 	def includeCode(self,param):
@@ -64,16 +62,15 @@ class ST2File:
 	def includePage(self,address):
 		pageNumber = self.bytes[4]+1							# add one new  page
 		self.bytes[4] = pageNumber  							# write page number back.
-		self.bytes[64+pageNumber-2] = address/256
-		print "Loading page at {0:x} to ST2 page {1}.".format(address,pageNumber)
+		self.bytes[64+pageNumber-2] = address//256
+		print("Loading page at {0:x} to ST2 page {1}.".format(address,pageNumber))
 		for i in range(0,256):									# copy one page over.
 			self.bytes[(pageNumber-2)*256+i+256] = self.codeFile[address+i-0x400]
 
 	def write(self):
-		print "Writing {0} length {1} bytes".format(self.outputFile,256*self.bytes[4])
+		print("Writing {0} length {1} bytes".format(self.outputFile,256*self.bytes[4]))
 		f = open(self.outputFile,"wb")							# output write file in binary
-		for i in range(0,256*self.bytes[4]):
-			f.write(chr(self.bytes[i]))
+		f.write(bytes(self.bytes[0:256*self.bytes[4]]))
 		f.close()
 
 b = ST2File()

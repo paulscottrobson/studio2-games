@@ -4,10 +4,11 @@
 AUTHOR:PR
 DUMPER:PR
 CAT:PSR007
-TITLE:Scramble
+TITLE:Scramble Colour
 BINARY:scramble.st2
 SOURCE:scramble.asm.bin
 CODE:400,4
+CODE:A00,1
 CODE:C00,2
 
 

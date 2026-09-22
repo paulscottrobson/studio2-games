@@ -4,9 +4,10 @@
 AUTHOR:PR
 DUMPER:PR
 CAT:PSR004
-TITLE:Kaboom
+TITLE:Kaboom Colour
 BINARY:kaboom.st2
 SOURCE:kaboom.asm.bin
 CODE:400,4
+CODE:A00,1
 
 

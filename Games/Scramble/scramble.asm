@@ -76,7 +76,8 @@ BulletObject = ObjectStart 									; first is the bullet object.
     	.include "1802.inc"
     	.org    400h										; ROM code in S2 starts at $400.
 StartCode:
-    	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+    	.db     >(ColourInit),<(ColourInit)					; This is required for the Studio 2, which runs from StartGame with P = 3
+															
 
 ; ***************************************************************************************************************************************
 ;
@@ -1534,3 +1535,74 @@ SG_Not4:xri 	4 											; now we have 1,2,3 for easy,medium,hard
     	ldi 	>GoStart
     	phi 	r4
     	sep 	r4
+
+; ***************************************************************************************************************************************
+;
+;										CDP1864 colour for the Studio III / MPT-02 family
+;
+; ***************************************************************************************************************************************
+		.org 	$A00 										; a spare cartridge page: the game is $400-$7FF and $C00-$DFF
+
+ColourInit:
+		ldi 	$0B 										; RD -> the colour window
+		phi 	rd
+		ldi 	0
+		plo 	rd
+		ldi 	>BandTable 									; RE -> the cells to lay down
+		phi 	re
+		ldi 	<BandTable
+		plo 	re
+CI_Loop:
+		lda 	re
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	CI_Loop
+		lbr 	StartGame
+
+BandTable:
+		.db 	7,7,7,7,7,7,7,7 							; band 0  rows 0-3   top border, score      white
+		.db 	6,6,6,6,6,6,6,6 							; band 1  rows 4-7   high sky               cyan
+		.db 	6,6,6,6,6,6,6,6 							; band 2  rows 8-11  sky                    cyan
+		.db 	6,6,6,6,6,6,6,6 							; band 3  rows 12-15 sky, the ship          cyan
+		.db 	6,6,6,6,6,6,6,6 							; band 4  rows 16-19 low sky, the ship      cyan
+		.db 	5,5,5,5,5,5,5,5 							; band 5  rows 20-23 rockets climbing       yellow
+		.db 	4,4,4,4,4,4,4,4 							; band 6  rows 24-27 terrain tops, fuel     green
+		.db 	4,4,4,4,4,4,4,4 							; band 7  rows 28-31 terrain, border, gauge green
+
+
+; ***************************************************************************************************************************************
+;
+;										CDP1864 colour for the Studio III / MPT-02 family
+;
+; ***************************************************************************************************************************************
+		.org 	$A00 										; a spare cartridge page: the game is $400-$7FF and $C00-$DFF
+
+ColourInit:
+		ldi 	$0B 										; RD -> the colour window
+		phi 	rd
+		ldi 	0
+		plo 	rd
+		ldi 	>BandTable 									; RE -> the cells to lay down
+		phi 	re
+		ldi 	<BandTable
+		plo 	re
+CI_Loop:
+		lda 	re
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	CI_Loop
+		lbr 	StartGame
+
+BandTable:
+		.db 	7,7,7,7,7,7,7,7 							; band 0  rows 0-3   top border, score      white
+		.db 	6,6,6,6,6,6,6,6 							; band 1  rows 4-7   high sky               cyan
+		.db 	6,6,6,6,6,6,6,6 							; band 2  rows 8-11  sky                    cyan
+		.db 	6,6,6,6,6,6,6,6 							; band 3  rows 12-15 sky, the ship          cyan
+		.db 	6,6,6,6,6,6,6,6 							; band 4  rows 16-19 low sky, the ship      cyan
+		.db 	5,5,5,5,5,5,5,5 							; band 5  rows 20-23 rockets climbing       yellow
+		.db 	4,4,4,4,4,4,4,4 							; band 6  rows 24-27 terrain tops, fuel     green
+		.db 	4,4,4,4,4,4,4,4 							; band 7  rows 28-31 terrain, border, gauge green

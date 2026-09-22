@@ -28,7 +28,6 @@ for s9rec in s9records:
 start = 0x400
 end = 0x1000
 binfile = open(sys.argv[1][:-3]+".bin","wb")
-for a in range(start,end):
-	binfile.write(chr(binary[a]))
+binfile.write(bytes(binary[start:end]))
 binfile.close()
 

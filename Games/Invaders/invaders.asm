@@ -49,7 +49,7 @@ ISDownRight = 3
    
         .include "1802.inc"
         .org    400h                    ; where RCA Studio II games start
-        .db     >(Start),<(Start)  ; Internal Code call to Machine Code
+        .db     >(ColourInit),<(ColourInit)  ; Internal Code call to Machine Code
 
 ; ****************************************************************************
 ;                               Invader Graphics
@@ -928,4 +928,68 @@ _WaitK0:bn3     _WaitK0                 ; wait for key 0
 
         .org    $07F8                   ; this is a bitmask table
         .db     $80,$40,$20,$10,$08,$04,$02,$01
+
+; ****************************************************************************
+;                               CDP1864 colour
+; ****************************************************************************
+        .org    $A00                    ; a spare cartridge page: the game is $400-$7FF
+
+ColourInit:
+        ldi     $0B                     ; RD -> the colour window at $B00
+        phi     rd
+        ldi     0
+        plo     rd
+        ldi     >BandTable              ; RE -> the 64 cells to lay down
+        phi     re
+        ldi     <BandTable
+        plo     re
+_ColourLoop:
+        lda     re
+        str     rd
+        inc     rd
+        glo     rd
+        xri     64                      ; 64 cells, then into the game
+        bnz     _ColourLoop
+        lbr     Start                   ; runs once, before the display matters
+
+BandTable:
+        .db     1,1,1,1,1,1,1,1         ; band 0  rows 0-3   top invader rows      red
+        .db     1,1,1,1,1,1,1,1         ; band 1  rows 4-7   invader rows          red
+        .db     5,5,5,5,5,5,5,5         ; band 2  rows 8-11  lowest invader rows   yellow
+        .db     5,5,5,5,5,5,5,5         ; band 3  rows 12-15 includes score's last row
+        .db     7,7,7,7,7,7,7,7         ; band 4  rows 16-19 open sky, missiles    white
+        .db     7,7,7,7,7,7,7,7         ; band 5  rows 20-23 open sky, missiles    white
+        .db     4,4,4,4,4,4,4,4         ; band 6  rows 24-27 the shields           green
+        .db     6,6,6,6,6,6,6,6         ; band 7  rows 28-31 shield feet, the base cyan
+        .org    $A00                    ; a spare cartridge page: the game is $400-$7FF
+
+ColourInit:
+        ldi     $0B                     ; RD -> the colour window at $B00
+        phi     rd
+        ldi     0
+        plo     rd
+        ldi     >BandTable              ; RE -> the 64 cells to lay down
+        phi     re
+        ldi     <BandTable
+        plo     re
+_ColourLoop:
+        lda     re
+        str     rd
+        inc     rd
+        glo     rd
+        xri     64                      ; 64 cells, then into the game
+        bnz     _ColourLoop
+        lbr     Start                   ; runs once, before the display matters
+
+BandTable:
+        .db     1,1,1,1,1,1,1,1         ; band 0  rows 0-3   top invader rows      red
+        .db     1,1,1,1,1,1,1,1         ; band 1  rows 4-7   invader rows          red
+        .db     5,5,5,5,5,5,5,5         ; band 2  rows 8-11  lowest invader rows   yellow
+        .db     5,5,5,5,5,5,5,5         ; band 3  rows 12-15 includes score's last row
+        .db     7,7,7,7,7,7,7,7         ; band 4  rows 16-19 open sky, missiles    white
+        .db     7,7,7,7,7,7,7,7         ; band 5  rows 20-23 open sky, missiles    white
+        .db     4,4,4,4,4,4,4,4         ; band 6  rows 24-27 the shields           green
+        .db     6,6,6,6,6,6,6,6         ; band 7  rows 28-31 shield feet, the base cyan
+; ****************************************************************************
+; ****************************************************************************
         .end

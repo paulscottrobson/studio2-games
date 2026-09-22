@@ -3,11 +3,12 @@
 ;
 AUTHOR:PR
 DUMPER:PR
-CAT:PSR005
-TITLE:Pacman
+CAT:PSR005C
+TITLE:Pacman Colour
 BINARY:pacman.st2
 SOURCE:pacman.asm.bin
 CODE:400,4
+CODE:A00,1
 CODE:C00,2
 
 

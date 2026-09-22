@@ -1,8 +1,9 @@
 AUTHOR:PR
 DUMPER:PR
 CAT:PSR001
-TITLE:Space Invaders
+TITLE:Space Invaders Colour
 BINARY:invaders.st2
 SOURCE:invaders.asm.bin
 CODE:400,4
+CODE:A00,1
 

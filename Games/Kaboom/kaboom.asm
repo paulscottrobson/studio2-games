@@ -20,7 +20,6 @@
 ;		R7 		Draw Bomb Subroutine
 ;		RF 		Random Number Seed
 ;
-;
 ; 		Studio 2 Specifics/Porting advice
 ;	 	=================================
 ;
@@ -82,7 +81,8 @@ BombMovesPerFrame = 4 										; no of attempted bomb moves per frame.
     	.include "1802.inc"
     	.org    400h										; ROM code in S2 starts at $400.
 StartCode:
-    	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+    	.db     >(ColourInit),<(ColourInit)					; This is required for the Studio 2, which runs from StartGame with P = 3
+															
 
 ; ***************************************************************************************************************************************
 ;
@@ -1012,6 +1012,76 @@ OutputChar:
 
 Stop:													; game ends, press RESET to play again.
 		br 		Stop
+
+; ***************************************************************************************************************************************
+;
+;										CDP1864 colour for the Studio III / MPT-02 family
+;
+; ***************************************************************************************************************************************
+		.org 	$A00 										; a spare cartridge page: the game itself is $400-$7FF
+
+ColourInit:
+		ldi 	$0B 										; RD -> the colour window
+		phi 	rd
+		ldi 	0
+		plo 	rd
+		ldi 	>BandTable 									; RE -> the cells to lay down
+		phi 	re
+		ldi 	<BandTable
+		plo 	re
+CI_Loop:
+		lda 	re
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	CI_Loop
+		lbr 	StartGame
+
+BandTable:
+		.db 	1,1,1,1,1,1,1,1 							; band 0  rows 0-3   just released         red
+		.db 	1,1,1,1,1,1,1,1 							; band 1  rows 4-7   still high            red
+		.db 	3,3,3,3,3,3,3,3 							; band 2  rows 8-11  falling               magenta
+		.db 	3,3,3,3,3,3,3,3 							; band 3  rows 12-15 falling               magenta
+		.db 	5,5,5,5,5,5,5,5 							; band 4  rows 16-19 closing               yellow
+		.db 	6,6,6,6,6,6,6,6 							; band 5  rows 20-23 imminent              cyan
+		.db 	4,4,4,4,4,4,4,4 							; band 6  rows 24-27 in among the buckets  green
+		.db 	4,4,4,4,4,4,4,4 							; band 7  rows 28-31 the buckets           green
+
+; ***************************************************************************************************************************************
+;
+;										CDP1864 colour for the Studio III / MPT-02 family
+;
+; ***************************************************************************************************************************************
+		.org 	$A00 										; a spare cartridge page: the game itself is $400-$7FF
+
+ColourInit:
+		ldi 	$0B 										; RD -> the colour window
+		phi 	rd
+		ldi 	0
+		plo 	rd
+		ldi 	>BandTable 									; RE -> the cells to lay down
+		phi 	re
+		ldi 	<BandTable
+		plo 	re
+CI_Loop:
+		lda 	re
+		str 	rd
+		inc 	rd
+		glo 	rd
+		xri 	64
+		bnz 	CI_Loop
+		lbr 	StartGame
+
+BandTable:
+		.db 	1,1,1,1,1,1,1,1 							; band 0  rows 0-3   just released         red
+		.db 	1,1,1,1,1,1,1,1 							; band 1  rows 4-7   still high            red
+		.db 	3,3,3,3,3,3,3,3 							; band 2  rows 8-11  falling               magenta
+		.db 	3,3,3,3,3,3,3,3 							; band 3  rows 12-15 falling               magenta
+		.db 	5,5,5,5,5,5,5,5 							; band 4  rows 16-19 closing               yellow
+		.db 	6,6,6,6,6,6,6,6 							; band 5  rows 20-23 imminent              cyan
+		.db 	4,4,4,4,4,4,4,4 							; band 6  rows 24-27 in among the buckets  green
+		.db 	4,4,4,4,4,4,4,4 							; band 7  rows 28-31 the buckets           green
 
         .org    07FFh                   				; fill it to 1,024 bytes.
         .db     0FFh

@@ -20,7 +20,6 @@
                         ;		R7 		Draw Bomb Subroutine
                         ;		RF 		Random Number Seed
                         ;
-                        ;
                         ; 		Studio 2 Specifics/Porting advice
                         ;	 	=================================
                         ;
@@ -99,7 +98,8 @@
 
 0400                        	.org    400h										; ROM code in S2 starts at $400.
 0400                    StartCode:
-0400  06E0                  	.db     >(StartGame),<(StartGame)					; This is required for the Studio 2, which runs from StartGame with P = 3
+0400  0A00                  	.db     >(ColourInit),<(ColourInit)					; This is required for the Studio 2, which runs from StartGame with P = 3
+                        															
 
                         ; ***************************************************************************************************************************************
                         ;
@@ -1030,6 +1030,76 @@
 0799                    Stop:													; game ends, press RESET to play again.
 0799  30 99             		br 		Stop
 
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;										CDP1864 colour for the Studio III / MPT-02 family
+                        ;
+                        ; ***************************************************************************************************************************************
+0A00                    		.org 	$A00 										; a spare cartridge page: the game itself is $400-$7FF
+
+0A00                    ColourInit:
+0A00  F8 0B             		ldi 	$0B 										; RD -> the colour window
+0A02  BD                		phi 	rd
+0A03  F8 00             		ldi 	0
+0A05  AD                		plo 	rd
+0A06  F8 0A             		ldi 	>BandTable 									; RE -> the cells to lay down
+0A08  BE                		phi 	re
+0A09  F8 17             		ldi 	<BandTable
+0A0B  AE                		plo 	re
+0A0C                    CI_Loop:
+0A0C  4E                		lda 	re
+0A0D  5D                		str 	rd
+0A0E  1D                		inc 	rd
+0A0F  8D                		glo 	rd
+0A10  FB 40             		xri 	64
+0A12  3A 0C             		bnz 	CI_Loop
+0A14  C0 06E0           		lbr 	StartGame
+
+0A17                    BandTable:
+0A17  01010101 01010101 		.db 	1,1,1,1,1,1,1,1 							; band 0  rows 0-3   just released         red
+0A1F  01010101 01010101 		.db 	1,1,1,1,1,1,1,1 							; band 1  rows 4-7   still high            red
+0A27  03030303 03030303 		.db 	3,3,3,3,3,3,3,3 							; band 2  rows 8-11  falling               magenta
+0A2F  03030303 03030303 		.db 	3,3,3,3,3,3,3,3 							; band 3  rows 12-15 falling               magenta
+0A37  05050505 05050505 		.db 	5,5,5,5,5,5,5,5 							; band 4  rows 16-19 closing               yellow
+0A3F  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 5  rows 20-23 imminent              cyan
+0A47  04040404 04040404 		.db 	4,4,4,4,4,4,4,4 							; band 6  rows 24-27 in among the buckets  green
+0A4F  04040404 04040404 		.db 	4,4,4,4,4,4,4,4 							; band 7  rows 28-31 the buckets           green
+
+                        ; ***************************************************************************************************************************************
+                        ;
+                        ;										CDP1864 colour for the Studio III / MPT-02 family
+                        ;
+                        ; ***************************************************************************************************************************************
+0A00                    		.org 	$A00 										; a spare cartridge page: the game itself is $400-$7FF
+
+0A00                    ColourInit:
+0A00  F8 0B             		ldi 	$0B 										; RD -> the colour window
+0A02  BD                		phi 	rd
+0A03  F8 00             		ldi 	0
+0A05  AD                		plo 	rd
+0A06  F8 0A             		ldi 	>BandTable 									; RE -> the cells to lay down
+0A08  BE                		phi 	re
+0A09  F8 17             		ldi 	<BandTable
+0A0B  AE                		plo 	re
+0A0C                    CI_Loop:
+0A0C  4E                		lda 	re
+0A0D  5D                		str 	rd
+0A0E  1D                		inc 	rd
+0A0F  8D                		glo 	rd
+0A10  FB 40             		xri 	64
+0A12  3A 0C             		bnz 	CI_Loop
+0A14  C0 06E0           		lbr 	StartGame
+
+0A17                    BandTable:
+0A17  01010101 01010101 		.db 	1,1,1,1,1,1,1,1 							; band 0  rows 0-3   just released         red
+0A1F  01010101 01010101 		.db 	1,1,1,1,1,1,1,1 							; band 1  rows 4-7   still high            red
+0A27  03030303 03030303 		.db 	3,3,3,3,3,3,3,3 							; band 2  rows 8-11  falling               magenta
+0A2F  03030303 03030303 		.db 	3,3,3,3,3,3,3,3 							; band 3  rows 12-15 falling               magenta
+0A37  05050505 05050505 		.db 	5,5,5,5,5,5,5,5 							; band 4  rows 16-19 closing               yellow
+0A3F  06060606 06060606 		.db 	6,6,6,6,6,6,6,6 							; band 5  rows 20-23 imminent              cyan
+0A47  04040404 04040404 		.db 	4,4,4,4,4,4,4,4 							; band 6  rows 24-27 in among the buckets  green
+0A4F  04040404 04040404 		.db 	4,4,4,4,4,4,4,4 							; band 7  rows 28-31 the buckets           green
+
 07FF                            .org    07FFh                   				; fill it to 1,024 bytes.
 07FF  FF                        .db     0FFh
 0800                            .end
@@ -1037,15 +1107,26 @@
 
 00000 Total Error(s)
 
-BATGRAPHIC         0414    BATPOSITION        0084 E  BATSPEED           0004 E
-BATVELOCITY        0085 E  BOMBERPOSITION     0091 E  BOMBGRAPHIC1       0402
-BOMBGRAPHIC2       0408    BOMBLIST           0000 E  BOMBLISTEND        0032 E
-BOMBMAX            000A E  BOMBMOVESPERFRAME  0004 E  BOMBRECSIZE        0005 E
-BOMBSCOREEACH      0089 E  BOMBSTODROP        0087 E  BOMBSTOHIT         0088 E
-CBM_EXIT           069B    CBM_FIND           0663    CBM_FOUND          0671
-CBM_NOMAXSPEED     068F    CC_INCREMENTSCORE  05A4    CC_LOOP            0570
-CC_NEXT            05C4    CC_NOEXTRALIFE     05BA    CC_NOTNEGATIVE     058A
-CC_SCOREEND        05BE    CHECKCOLLISION     0567    CMB_BOMBEROK       065B
+BANDTABLE          0A17    BATGRAPHIC         0414    BATPOSITION        0084 E
+BATSPEED           0004 E  BATVELOCITY        0085 E  BOMBERPOSITION     0091 E
+BOMBGRAPHIC1       0402    BOMBGRAPHIC2       0408    BOMBLIST           0000 E
+BOMBLISTEND        0032 E  BOMBMAX            000A E  BOMBMOVESPERFRAME  0004 E
+BOMBRECSIZE        0005 E  BOMBSCOREEACH      0089 E  BOMBSTODROP        0087 E
+BOMBSTOHIT         0088 E  CBM_EXIT           069B    CBM_FIND           0663
+CBM_FOUND          0671    CBM_NOMAXSPEED     068F    CC_INCREMENTSCORE  05A4
+CC_LOOP            0570    CC_NEXT            05C4    CC_NOEXTRALIFE     05BA
+CC_NOTNEGATIVE     058A    CC_SCOREEND        05BE    CHECKCOLLISION     0567
+CI_LOOP            0A0C    CMB_BOMBEROK       065B    COLOURINIT         0A00
+BANDTABLE          0A17    BATGRAPHIC         0414    BATPOSITION        0084 E
+BATSPEED           0004 E  BATVELOCITY        0085 E  BOMBERPOSITION     0091 E
+BOMBGRAPHIC1       0402    BOMBGRAPHIC2       0408    BOMBLIST           0000 E
+BOMBLISTEND        0032 E  BOMBMAX            000A E  BOMBMOVESPERFRAME  0004 E
+BOMBRECSIZE        0005 E  BOMBSCOREEACH      0089 E  BOMBSTODROP        0087 E
+BOMBSTOHIT         0088 E  CBM_EXIT           069B    CBM_FIND           0663
+CBM_FOUND          0671    CBM_NOMAXSPEED     068F    CC_INCREMENTSCORE  05A4
+CC_LOOP            0570    CC_NEXT            05C4    CC_NOEXTRALIFE     05BA
+CC_NOTNEGATIVE     058A    CC_SCOREEND        05BE    CHECKCOLLISION     0567
+CI_LOOP            0A0C    CMB_BOMBEROK       065B    COLOURINIT         0A00
 CREATEBOMB         0633    DBT_EXIT           04E6    DBT_LOOP           04CA
 DB_DRAWCOMPLETED   045C    DB_EXIT            045D    DB_PLOTBOMB        044E
 DB_RIGHTHANDNIBBLE 0440    DRAWBAT            04A9    DRAWBOMB           0434
